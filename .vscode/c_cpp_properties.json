@@ -9,7 +9,6 @@
             "name": "PlatformIO",
             "includePath": [
                 "/Users/adipu/rescueVision/include",
-                "/Users/adipu/rescueVision/src",
                 "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
                 "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/include",
                 "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
@@ -186,13 +185,13 @@
                 "/Users/adipu/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
                 "/Users/adipu/rescueVision/managed_components/espressif__led_strip/include",
                 "/Users/adipu/rescueVision/managed_components/espressif__led_strip/interface",
+                "/Users/adipu/rescueVision/src",
                 ""
             ],
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
                     "/Users/adipu/rescueVision/include",
-                    "/Users/adipu/rescueVision/src",
                     "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/esp32s3/include",
                     "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/include",
                     "/Users/adipu/.platformio/packages/framework-espidf/components/xtensa/deprecated_include",
@@ -369,6 +368,7 @@
                     "/Users/adipu/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
                     "/Users/adipu/rescueVision/managed_components/espressif__led_strip/include",
                     "/Users/adipu/rescueVision/managed_components/espressif__led_strip/interface",
+                    "/Users/adipu/rescueVision/src",
                     ""
                 ]
             },
