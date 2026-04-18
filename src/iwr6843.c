@@ -125,7 +125,7 @@ static void handle_vital_signs(const uint8_t *payload, uint32_t len) {
 static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t num_tlvs) {
     size_t off = 0;
     for (uint32_t i = 0; i < num_tlvs; i++) {
-        if (off + sizeof(iwr_tlv_header_t) > payload_len) {
+        if (sizeof(iwr_tlv_header_t) > payload_len - off) {
             ESP_LOGW(TAG, "TLV header overrun at i=%u off=%u", (unsigned)i, (unsigned)off);
             return;
         }
@@ -133,7 +133,7 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
         memcpy(&hdr, payload + off, sizeof(hdr));
         off += sizeof(iwr_tlv_header_t);
 
-        if (off + hdr.length > payload_len) {
+        if (hdr.length > payload_len - off) {
             ESP_LOGW(TAG, "TLV payload overrun (type=%u len=%u off=%u pl=%u) — dropping frame",
                      (unsigned)hdr.type, (unsigned)hdr.length,
                      (unsigned)off, (unsigned)payload_len);
@@ -160,7 +160,8 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
                          (unsigned)hdr.type, (unsigned)hdr.length);
                 break;
         }
-        off += hdr.length;
+        uint32_t aligned_length = (hdr.length + 3) & ~(uint32_t)3;
+        off += aligned_length;
     }
 }
 
@@ -170,9 +171,13 @@ static void parser_task(void *arg) {
     uint8_t window[8] = {0};
 
     for (;;) {
-        // SYNC: slide 8-byte window until magic word found.
-        memmove(window, window + 1, 7);
-        if (!stream_read_exact(&window[7], 1, pdMS_TO_TICKS(500))) continue;
+        // SYNC: Find magic word efficiently
+        uint8_t b;
+        if (!stream_read_exact(&b, 1, pdMS_TO_TICKS(500))) continue;
+        if (b != MAGIC[0]) continue;
+        
+        window[0] = b;
+        if (!stream_read_exact(&window[1], 7, pdMS_TO_TICKS(50))) continue;
         if (memcmp(window, MAGIC, 8) != 0) continue;
 
         // Read remaining 32 bytes of the 40-byte header.
