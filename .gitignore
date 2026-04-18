@@ -1,2 +1,6 @@
 .pio
 managed_components/
+
+.vscode/
+.claude/
+*.bin
