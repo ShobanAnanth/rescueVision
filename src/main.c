@@ -8,4 +8,5 @@ void app_main(void) {
     iwr6843_init();
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    
 }
