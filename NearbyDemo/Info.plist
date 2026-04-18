@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-central</string>
+		<string>nearby-interaction</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Camera is required for ARKit world tracking to estimate the UWB anchor position in 3D space.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth is used to communicate with the Qorvo DWM3001CDK UWB anchor and exchange NearbyInteraction session configuration data.</string>
+	<key>NSNearbyInteractionUsageDescription</key>
+	<string>Nearby Interaction is used to measure precise UWB distances to the DWM3001CDK anchor device.</string>
+</dict>
+</plist>
