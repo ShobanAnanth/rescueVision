@@ -15,5 +15,5 @@ void app_main(void) {
     // while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     
     initStepper();
-    xTaskCreate(stepperTask, "stepper", 1024, NULL, 3, poop);
+    xTaskCreate(stepperTask, "stepper", 4096, NULL, 3, poop);
 }

@@ -12,10 +12,10 @@
 #include <stdlib.h>
 
 // IWR6843AOPEVM CP2105 dual-UART bridge.
-// Per TI mmWave SDK AOP demo: interface 0 = Enhanced = DATA @ 921600;
-//                             interface 1 = Standard = CLI  @ 115200.
-#define IWR_IFACE_DATA   0
-#define IWR_IFACE_CLI    1
+// Per TI mmWave SDK AOP demo: interface 0 = Standard = CLI  @ 115200;
+//                             interface 1 = Enhanced = DATA @ 921600.
+#define IWR_IFACE_DATA   1
+#define IWR_IFACE_CLI    0
 
 #define CLI_BAUD         115200
 #define DATA_BAUD        921600
