@@ -40,7 +40,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.3
+    version: 5.5.1
 direct_dependencies:
 - espressif/usb_host_cdc_acm
 - espressif/usb_host_cp210x_vcp
