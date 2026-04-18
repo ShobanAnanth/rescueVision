@@ -187,6 +187,8 @@
                 "C:/Users/nshob/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
                 "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__led_strip/include",
                 "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__led_strip/interface",
+                "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__usb_host_cdc_acm/include",
+                "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__usb_host_cdc_acm/interface",
                 ""
             ],
             "browse": {
@@ -371,6 +373,8 @@
                     "C:/Users/nshob/.platformio/packages/framework-espidf/components/wifi_provisioning/include",
                     "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__led_strip/include",
                     "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__led_strip/interface",
+                    "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__usb_host_cdc_acm/include",
+                    "C:/Users/nshob/Desktop/rescueVision/managed_components/espressif__usb_host_cdc_acm/interface",
                     ""
                 ]
             },

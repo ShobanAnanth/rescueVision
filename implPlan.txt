@@ -1,0 +1,554 @@
+# IWR6843AOPEVM Rev G → ESP32-S3-DevKitC-1: Full Implementation Plan
+
+## Verified System Architecture
+
+```
+[Spliced micro-USB, your 5V rail] → [IWR6843AOPEVM USB2 (power-only)]
+                                            │
+[IWR6843AOPEVM USB1 (data, CP2105)] ────────┘
+        │
+        │ Enhanced interface @ 921600 (DATA, TLV type 0x410 vital signs)
+        │ Standard interface @ 115200 (CLI, config + sensorStart)
+        │
+        ▼
+[ESP32-S3-DevKitC-1 USB OTG port (D+/D- GPIO19/20)]
+        │
+        ▼ ring buffer + parser task
+[Parser] → [Stepper-angle transform] → [PointNet-class NN via ESP-DL] → [BLE GATT out]
+```
+
+---
+
+## Key Verified Facts (Corrections from Earlier Discussion)
+
+- **CP2105 is NOT CDC-ACM natively** — it uses Silicon Labs' vendor-specific protocol. However, Espressif provides `espressif/usb_host_cp210x_vcp` (v2.2.0, ~100k downloads) which handles this. No custom driver needed.
+- **Enhanced COM Port (interface 0) = DATA at 921600 baud.** Standard COM Port (interface 1) = CLI at 115200 baud. This is confirmed by TI's mmWave SDK AOP demo docs — the opposite of what is often assumed.
+- **Vital Signs TLV type = `0x410` (1040 decimal), length = 136 bytes** — confirmed via TI E2E forum.
+- **Config does NOT persist across power cycles.** Must be resent every boot.
+- **ESP32-S3-DevKitC-1 native USB OTG does not source VBUS 5V.** This is fine here because the IWR is self-powered via your spliced cable. Cut the red VBUS wire in your USB data cable to prevent back-feeding.
+- **Second micro-USB on Rev G is power-only.** Confirmed — routes directly to the 5V rail, no data lines connected. Your spliced cable plan is correct.
+
+---
+
+## Phase 0 — Critical Hardware Prep
+
+### 0.1 Spliced Power Cable (Second Micro-USB)
+
+The Rev G board has replaced the barrel jack with a second micro-USB port wired solely to the 5V power rail. Your plan to splice a cable from your existing rail is the right approach.
+
+**Requirements:**
+- Use **24 AWG or thicker** wire for the power conductors. Standard micro-USB cables use 28 AWG which is only rated for ~0.5A; the IWR6843 draws up to 1.5A during active chirping
+- USB wire colors: Red = 5V, Black = GND, Green = D+, White = D−. Connect only Red and Black. Cut and insulate Green and White
+- **Tie GND of your 5V rail to the ESP32-S3's GND.** This is the single most common failure mode. Without common ground, USB D+/D− signaling references different zeros and data corrupts
+- Verify 5V at the EVM test point under load with a multimeter — should stay above 4.75V during active chirping
+
+### 0.2 USB Data Cable (USB1 → ESP32-S3)
+
+The ESP32-S3-DevKitC-1 USB OTG port on GPIO19/20 does **not source VBUS 5V** — confirmed by Espressif's own issue tracker and dev kit documentation. This is fine because the IWR is self-powered.
+
+**What to do:**
+- Use a micro-USB to USB-A cable from USB1 on the IWR to the ESP32-S3 OTG port via a USB-A to USB-C (or A to micro, depending on your DevKitC variant) adapter/cable
+- In your cable, **cut the red VBUS wire** on the IWR side. This prevents the IWR's 5V from back-feeding into the ESP32's VBUS pin while the ESP32 is powered separately
+- Keep D+, D−, and GND connected
+
+### 0.3 Switch Settings (Rev G — Modular/USB Mode)
+
+Per Section 4.6/4.8 of the Rev G user guide (`swru546e.pdf`):
+
+- **S1: Modular (USB) Mode** — default position, routes both UARTs through CP2105
+- **SOP for Functional Mode:** SOP0 = OFF, SOP1 = OFF, SOP2 = OFF
+  - (SOP0 OFF = pulled high; SOP1/SOP2 OFF = pulled low — check the Rev G schematic to confirm switch positions vs. pull directions, as this is a common confusion)
+- After flashing (described in 0.4), ensure you set switches back to Functional Mode before normal operation
+
+### 0.4 Flash the Binary (One-Time, Via PC)
+
+Do this before writing any ESP32 code. Prove the radar works first.
+
+1. Set SOP switches to **Flashing Mode** and power-cycle the IWR
+2. Open Uniflash, select the Standard COM port
+3. Flash: `radar_toolbox_<ver>/source/ti/examples/Industrial_and_Personal_Electronics/Vital_Signs/Vital_Signs_With_People_Tracking/prebuilt_binaries/vital_signs_tracking_6843AOP_demo.bin`
+4. Set SOP switches back to **Functional Mode** and power-cycle
+5. Open the TI Industrial Visualizer, select "Vital Signs with People Tracking" as config type
+6. Connect to both COM ports, send `vital_signs_AOP_xm.cfg`
+7. Have a subject sit motionless 1–1.5m in front of the sensor for 30 seconds — confirm you see stable heart rate and breathing rate values before touching the ESP32
+
+---
+
+## Phase 1 — ESP-IDF Project Setup
+
+### 1.1 IDF Version and Target
+
+```bash
+# Use ESP-IDF v5.3 or later — required for usb_host_cp210x_vcp v2.2.0
+idf.py set-target esp32s3
+```
+
+### 1.2 sdkconfig.defaults
+
+```
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+```
+
+PSRAM is required for the neural network tensor arena in Phase 6. Hub support is enabled for future flexibility.
+
+### 1.3 Component Dependencies
+
+Create `main/idf_component.yml`:
+
+```yaml
+dependencies:
+  espressif/usb_host_cdc_acm: "^2.1.0"
+  espressif/usb_host_cp210x_vcp: "^2.2.0"
+  espressif/esp-dl: "^3.0.0"
+  idf: ">=5.3"
+```
+
+Install: `idf.py add-dependency "espressif/usb_host_cp210x_vcp^2.2.0"`
+
+---
+
+## Phase 2 — Opening Both CP2105 Interfaces
+
+### 2.1 How the CP2105 Enumerates
+
+The CP2105 appears as a **single USB composite device** (`VID=0x10C4, PID=0xEA70`) with **two vendor-specific interfaces**:
+- Interface 0 = Enhanced = **DATA port at 921600 baud**
+- Interface 1 = Standard = **CLI port at 115200 baud**
+
+### 2.2 Opening Logic
+
+The `VCP::open()` convenience function opens interface 0 by default. To open both interfaces simultaneously, use the lower-level API with explicit `interface_idx`:
+
+```cpp
+#include "usb/cdc_acm_host.h"
+#include "usb/vcp_cp210x.hpp"
+
+const uint16_t CP2105_VID = 0x10C4;
+const uint16_t CP2105_PID = 0xEA70;
+
+// --- Data port (Enhanced, interface 0) ---
+cdc_acm_host_device_config_t cfg_data = {
+    .connection_timeout_ms = 5000,
+    .out_buffer_size = 128,
+    .in_buffer_size = 8192,      // Must be large for 921600 baud
+    .user_arg = stream_buffer,
+    .event_cb = usb_event_callback,
+    .data_cb = data_rx_callback
+};
+CP210x *data_port = new CP210x(CP2105_VID, CP2105_PID, 0, &cfg_data);
+data_port->line_coding_set({.dwDTERate = 921600, .bCharFormat = 0,
+                             .bParityType = 0, .bDataBits = 8});
+
+// --- CLI port (Standard, interface 1) ---
+cdc_acm_host_device_config_t cfg_cli = {
+    .connection_timeout_ms = 5000,
+    .out_buffer_size = 256,
+    .in_buffer_size = 256,
+    .user_arg = nullptr,
+    .event_cb = usb_event_callback,
+    .data_cb = cli_rx_callback
+};
+CP210x *cli_port = new CP210x(CP2105_VID, CP2105_PID, 1, &cfg_cli);
+cli_port->line_coding_set({.dwDTERate = 115200, .bCharFormat = 0,
+                            .bParityType = 0, .bDataBits = 8});
+```
+
+**Confirm interface assignment:** Send `version\n` to interface 1. If the CLI port is correct, the IWR replies with a TI banner. Interface 0 will be silent until `sensorStart` is issued.
+
+### 2.3 RX Buffer Requirements
+
+At 921600 baud you receive approximately 115 KB/s. The default 256-byte `in_buffer_size` will overflow on nearly every frame (~600–900 bytes each at 11 Hz).
+
+| Interface | in_buffer_size |
+|-----------|----------------|
+| Data (interface 0) | 8192 (minimum 4096) |
+| CLI (interface 1) | 256 |
+
+The data RX callback must drain immediately into a downstream StreamBuffer — do not process in the callback.
+
+---
+
+## Phase 3 — Configuration Sequence
+
+### 3.1 Commands
+
+Sent in order to the **CLI port (interface 1)** using `cli_port->tx_blocking()`. These come from `vital_signs_AOP_xm.cfg`:
+
+```
+sensorStop
+flushCfg
+dfeDataOutputMode 1
+channelCfg 15 7 0
+adcCfg 2 1
+profileCfg 0 60.75 30 10 200 0 0 96 1 288 10785 0 0 30
+chirpCfg 0 0 0 0 0 0 0 1
+chirpCfg 1 1 0 0 0 0 0 4
+chirpCfg 2 2 0 0 0 0 0 2
+frameCfg 0 2 96 0 90 1 0
+lowPower 0 0
+guiMonitor 0 1 1 0 0 1 1
+cfarCfg -1 0 2 8 4 3 0 15.000000 0.000000
+cfarCfg -1 1 0 4 2 3 1 15.000000 0.000000
+multipathMitigation 0
+sensorPosition 1.5 0 0
+boundaryBox -3 3 0.5 5 -1 3
+staticBoundaryBox -3 3 0.5 5 -1 3
+presenceBoundaryBox -3 3 0.5 5 -1 3
+gatingParam 3 2 2 0
+stateParam 10 5 100 100 5
+allocationParam 250 250 0.1 10 0.5 20
+trackingCfg 1 2 300 20 52 82 50 90
+SceneryParam -3 3 0.5 5 -1 3
+vitalsign 15 300
+VSRangeIdxCfg 0 21
+sensorStart
+```
+
+> **Note:** Use the exact contents of `vital_signs_AOP_xm.cfg` from your Radar Toolbox installation. The profile above is approximate. The config file is the authoritative source.
+
+### 3.2 Send/Acknowledge Cycle
+
+**Do not blast all commands at once.** After each command, wait for the acknowledgment response before sending the next.
+
+```cpp
+void send_config(CP210x *cli_port, const char **commands, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        // Send the command
+        cli_port->tx_blocking((uint8_t*)commands[i], strlen(commands[i]));
+        cli_port->tx_blocking((uint8_t*)"\n", 1);
+
+        // Wait for "Done" acknowledgment (1000ms timeout)
+        if (!wait_for_cli_ack(cli_port, 1000)) {
+            ESP_LOGE(TAG, "No ack for command: %s", commands[i]);
+            // Retry or abort
+        }
+    }
+    // After sensorStart, data port begins streaming immediately
+}
+```
+
+After `sensorStart`, ignore the CLI port. All output comes from the data port. Config must be resent on every power cycle — there is no autostart in the stock binary.
+
+---
+
+## Phase 4 — Parser Pipeline
+
+### 4.1 Architecture
+
+```
+[CP2105 data RX callback]
+        │ push bytes (ISR context — keep it fast)
+        ▼
+[FreeRTOS StreamBuffer — 16 KB]
+        │ block-read
+        ▼
+[Parser Task — high priority FreeRTOS task]
+        │ on valid frame
+        ▼
+[Frame Queue → App Logic]
+```
+
+### 4.2 RX Callback (Minimal by Design)
+
+```cpp
+static bool data_rx_callback(const uint8_t *data, size_t data_len, void *arg) {
+    StreamBufferHandle_t sb = (StreamBufferHandle_t)arg;
+    // Push bytes immediately, non-blocking
+    xStreamBufferSendFromISR(sb, data, data_len, NULL);
+    return true;  // Returning true tells the driver to keep receiving
+}
+```
+
+The ESP-IDF CDC-ACM driver auto-resubmits USB transfers when the callback returns `true`. No manual resubmission needed.
+
+### 4.3 Packed Wire-Format Structs
+
+Every struct that maps to bytes on the wire must be packed. Without `__attribute__((packed))`, the compiler adds padding and silently destroys parsing.
+
+```cpp
+#pragma pack(push, 1)
+
+struct FrameHeader_t {
+    uint8_t  magicWord[8];       // 0x02 01 04 03 06 05 08 07
+    uint32_t version;
+    uint32_t totalPacketLen;     // Ground truth for frame size
+    uint32_t platform;
+    uint32_t frameNumber;
+    uint32_t timeCpuCycles;
+    uint32_t numDetectedObj;
+    uint32_t numTLVs;
+    uint32_t subFrameNumber;
+} __attribute__((packed));
+static_assert(sizeof(FrameHeader_t) == 40, "FrameHeader size wrong");
+
+struct TLVHeader_t {
+    uint32_t type;
+    uint32_t length;
+} __attribute__((packed));
+static_assert(sizeof(TLVHeader_t) == 8, "TLVHeader size wrong");
+
+struct Target3D_t {
+    uint32_t tid;
+    float    posX, posY, posZ;
+    float    velX, velY, velZ;
+    float    accX, accY, accZ;
+    float    ec[16];
+    float    g;
+    float    confidenceLevel;
+} __attribute__((packed));
+static_assert(sizeof(Target3D_t) == 112, "Target3D size wrong");
+
+struct VitalSigns_t {
+    uint16_t id;
+    uint16_t rangebin;
+    float    breathingDeviation;  // < 0.02 = holding breath
+    float    heart_rate;
+    float    breathing_rate;
+    float    heartCircBuf[15];
+    float    breathCircBuf[15];
+} __attribute__((packed));
+static_assert(sizeof(VitalSigns_t) == 136, "VitalSigns size wrong");
+
+#pragma pack(pop)
+```
+
+### 4.4 Parser State Machine
+
+The magic word `0x02 0x01 0x04 0x03 0x06 0x05 0x08 0x07` is the **only truth**. Any parse error → flush → return to `HUNT_MAGIC`.
+
+```
+┌──────────────┐  found magic  ┌─────────────┐  32 bytes    ┌──────────────┐
+│  HUNT_MAGIC  │ ─────────────>│ READ_HEADER │ ─────────────>│   VALIDATE   │
+└──────────────┘               └─────────────┘               └──────────────┘
+       ▲                                                              │
+       │  any error / timeout                              valid len? │
+       │◄─────────────────────────────────────────────────────────── │
+       │                                                              ▼
+       │                                                     ┌──────────────┐
+       │◄───────── any error / timeout ─────────────────────│ READ_PAYLOAD │
+       │                                                     └──────────────┘
+       │                                                              │
+       │                                                     full payload ▼
+       │◄───────────────── always re-hunt ──────────────────┌──────────────┐
+                                                            │   PROCESS    │
+                                                            └──────────────┘
+```
+
+### 4.5 TLV Dispatch
+
+| TLV Type | Value | Size |
+|----------|-------|------|
+| Point Cloud | 6 | Variable |
+| Target List (3D) | 7 | `n × 112 bytes` |
+| Target Index | 8 | `n × 1 byte` |
+| Presence Indication | 9 | 4 bytes |
+| **Vital Signs** | **0x410 (1040)** | **136 bytes** |
+
+Verify TLV type `0x410` against `parseTLVs.py` in your Radar Toolbox — the exact integer can vary by firmware build.
+
+### 4.6 Vital Signs Validation
+
+Before trusting a parsed value, apply sanity checks:
+
+```cpp
+if (vs->heart_rate > 30.0f && vs->heart_rate < 220.0f &&
+    vs->breathing_rate > 4.0f && vs->breathing_rate < 40.0f &&
+    vs->breathingDeviation > 0.02f) {
+    // Valid measurement — use it
+}
+// breathingDeviation < 0.02f means subject is holding breath
+// Apply a median filter over last 10 HR readings before using the value
+```
+
+Vital signs also require the subject to be **motionless for at least 20–30 seconds** before stabilizing. Do not evaluate vitals during motion.
+
+---
+
+## Phase 5 — Stepper Angle Transform
+
+Since the radar rotates but the IWR always reports in its local frame, apply a Z-axis rotation to convert each point cloud frame to the world frame:
+
+```cpp
+// theta = current stepper angle in radians, read from your stepper driver
+float x_world = point.x * cosf(theta) - point.y * sinf(theta);
+float y_world = point.x * sinf(theta) + point.y * cosf(theta);
+float z_world = point.z;   // unchanged for rotation around vertical axis
+```
+
+Since you are doing **stop-and-stare** (motor stopped during frame capture), read `theta` once per frame and apply uniformly to all points in that frame. Store `theta` alongside the frame timestamp so the NN can use angular position as a feature if needed.
+
+---
+
+## Phase 6 — Classification Pipeline (ESP-DL)
+
+### Target Classes
+- Lying
+- Standing
+- Unconscious (low motion + anomalous vitals)
+- Panic (high motion + elevated HR/BR)
+
+### Option A: Per-Target Feature Vector (Recommended for Hackathon)
+
+For each tracked Target3D_t, build a feature vector including:
+- Position: `posX, posY, posZ`
+- Velocity: `velX, velY, velZ`
+- Derived velocity magnitude
+- From matched VitalSigns_t (matched by `id` field): `heart_rate`, `breathing_rate`, `breathingDeviation`
+- Temporal features over a window: velocity variance, HR trend, position delta
+
+Total: ~15 features. Train a small MLP (2–3 hidden layers, 64 neurons) in PyTorch or TensorFlow, quantize to INT8 with ESP-PPQ, export as `.espdl`, deploy with ESP-DL.
+
+**Inference time:** < 10ms per target on ESP32-S3 with PIE vector instructions. Well within budget.
+
+### Option B: Simplified PointNet (More Powerful, More Work)
+
+Based on published research using IWR6843 + PointNet++ for human activity recognition (MDPI Sensors 2023), this architecture works well for this problem. A simplified PointNet (shared-MLP + global max-pool, no T-Net, no ball-query) can classify per-frame point cloud segments.
+
+**Input:** 64 points × 4 features (x, y, z, velocity_magnitude)  
+**Output:** 4-class softmax  
+**Inference time:** ~30–50ms on ESP32-S3 with INT8 quantization
+
+Use this if Option A discrimination accuracy is insufficient, or after the hackathon.
+
+### Temporal Windowing (Both Options)
+
+Single-frame classification is noisy. Window over ~22 frames (2 seconds at 90ms frame time) and either majority-vote or feed a sequence model. This is especially important for distinguishing unconscious from stationary-and-normal.
+
+### ESP-DL Deployment Workflow
+
+```
+Train model (PyTorch/TF)
+        │
+        ▼
+Export to ONNX
+        │
+        ▼
+Quantize with ESP-PPQ (INT8 post-training quantization)
+        │
+        ▼
+Export .espdl model
+        │
+        ▼
+Embed in ESP-IDF project as binary blob in flash
+        │
+        ▼
+Load with esp_dl::Model, call model.forward(input_tensor)
+```
+
+---
+
+## Phase 7 — BLE Output
+
+Use the ESP-IDF NimBLE stack (smaller footprint than Bluedroid, sufficient for GATT notifications).
+
+### BLE Payload Design
+
+Keep packets compact — BLE MTU is typically 23–244 bytes.
+
+```cpp
+struct __attribute__((packed)) BlePacket_t {
+    uint32_t timestamp_ms;
+    float    stepper_angle_rad;
+    uint8_t  num_targets;
+    uint8_t  classification[4];   // class index per target (0–3)
+    struct {
+        int16_t x_mm;             // position quantized to mm (±32m range)
+        int16_t y_mm;
+        int16_t z_mm;
+        uint8_t velocity_mag;     // scaled velocity magnitude
+        uint8_t snr;
+    } points[32];
+};
+```
+
+Using `int16_t` millimeters instead of `float` meters cuts 50% of the positional data size with negligible precision loss for this application.
+
+### Transmission Rate
+
+Do not notify at 11Hz (every radar frame) — BLE + phone processing will saturate. Either:
+- Aggregate every 3–5 frames → ~3Hz fixed rate
+- Event-driven: notify only when classification changes or a new target appears/disappears
+
+---
+
+## Phase 8 — Validation Ladder
+
+Bring up each layer in order. Do not move to the next step until the current one is verified.
+
+| Step | What to verify |
+|------|---------------|
+| 1 | Radar alone works on PC — TI Industrial Visualizer shows HR + BR for motionless subject after 30s |
+| 2 | ESP32-S3 enumerates CP2105 — USB device descriptor shows VID=0x10C4, PID=0xEA70, two interfaces |
+| 3 | CLI handshake works — send `version\n` to interface 1, confirm TI banner response |
+| 4 | Full config sequence — send all config commands, confirm each `Done` ACK, confirm data stream starts |
+| 5 | Raw hex match — log hex bytes received on interface 0 and compare byte-for-byte against TI visualizer capture on same session |
+| 6 | Frame parser — frame numbers increment monotonically, `totalPacketLen` is 200–1500 bytes |
+| 7 | Vital signs decode correctly — print HR and BR, compare against TI visualizer for identical subject |
+| 8 | Stepper transform — rotate motor, verify stationary object stays at fixed world-frame coordinates |
+| 9 | Classification inference — feed synthetic feature vectors, confirm model outputs expected class |
+| 10 | BLE notifications — use nRF Connect app to subscribe to GATT characteristic, see data arrive |
+| 11 | End-to-end — subject lies down, phone shows classification change within ~2 seconds |
+
+---
+
+## Risk Register
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Missing common ground between ESP32 and IWR power rail | **Critical** | Tie GND before first power-on, confirm with multimeter |
+| Insufficient current on spliced power cable | **High** | Use 24 AWG wire; measure voltage at EVM 5V test point under load — must stay above 4.75V |
+| RX buffer too small at 921600 baud | **High** | Set `in_buffer_size = 8192`, StreamBuffer = 16 KB; log dropped frames |
+| Missing `__attribute__((packed))` on a wire struct | **High** | `static_assert(sizeof(...))` every wire struct at compile time |
+| Parsing breaks on mid-stream byte drop | **Medium** | Self-healing state machine; any error → re-hunt magic word |
+| Subject moves during vitals window | **Medium** | Require 30s stillness; gate on `breathingDeviation > 0.02` |
+| SOP switches wrong after flashing | **Medium** | Verify DS3/LD4 LED indicates Functional Mode after power cycle |
+| CP2105 interface 0/1 identity swapped | **Medium** | Probe both: send `version\n` to each, one responds with banner |
+| BLE notification rate exceeds phone buffer | **Low** | Cap at 3Hz or event-driven |
+| Neural network inference too slow | **Low–Medium** | Start with Option A MLP; PointNet if needed post-hackathon |
+| `breathingDeviation` always zero | **Low** | Subject may be too far or too mobile; check sensor position at 1–1.5m height |
+
+---
+
+## Hackathon-Ordered Build Sequence
+
+| Time | Phase | Goal |
+|------|-------|------|
+| Day 1 AM | 0 | Hardware complete — spliced cable tested, binary flashed, TI visualizer shows live vitals |
+| Day 1 PM | 1–3 | ESP32-S3 enumerates CP2105, config sequence works, `Done` ACKs logged |
+| Day 2 AM | 4 | Parser producing valid frames, raw HR/BR/position values in serial log |
+| Day 2 PM | 5, 7 | Stepper transform verified, BLE notifications arriving on phone with raw data |
+| Day 3 | 6 | Classification model trained, deployed via ESP-DL, end-to-end demo functional |
+
+> Start the NN (Phase 6) **only after** Phase 4 is solid. Debugging a model trained on broken data wastes more time than any other mistake in this stack.
+
+---
+
+## Reference: Port Identity Quick Summary
+
+| Windows Device Manager | Interface | Baud | Purpose |
+|----------------------|-----------|------|---------|
+| Enhanced COM Port (COM5 in your setup) | 0 | 921600 | **DATA** — read TLV frames |
+| Standard COM Port (COM4 in your setup) | 1 | 115200 | **CLI** — send config commands |
+
+---
+
+## Reference: Vital Signs TLV Quick Decode
+
+```
+Magic Word:     02 01 04 03 06 05 08 07  (8 bytes)
+Frame Header:   40 bytes total
+TLV Header:     type=0x410 (uint32), length=0x88/136 (uint32)
+VitalSigns_t:   136 bytes
+  [0:2]   id              (uint16)
+  [2:4]   rangebin        (uint16)
+  [4:8]   breathDeviation (float)   — < 0.02 = holding breath
+  [8:12]  heart_rate      (float)   — valid: 30–220 bpm
+  [12:16] breathing_rate  (float)   — valid: 4–40 bpm
+  [16:76] heartCircBuf    (15 × float)
+  [76:136] breathCircBuf  (15 × float)
+```
