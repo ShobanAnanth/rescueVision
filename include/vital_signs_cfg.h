@@ -45,7 +45,7 @@ static const char VITAL_SIGNS_CFG[] =
     "boundaryBox -2.0 2.0 0.3 3.5 -0.5 2.5\n"
     "presenceBoundaryBox -1.5 1.5 0.3 2.5 -0.5 2.5\n"
     "\n"
-    "sensorPosition 1.26 0 10\n"
+    "sensorPosition 0.91 0 10\n"
     "gatingParam 3 3 3 2 10\n"
     "stateParam 3 3 15 250 50 6000\n"
     "% Velocity threshold to 0.05 to keep track alive during tiny movements\n"
