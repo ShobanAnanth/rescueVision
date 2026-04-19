@@ -72,21 +72,28 @@ static int gap_event(struct ble_gap_event *event, void *arg);
 
 static void start_advertising(void) {
     struct ble_gap_adv_params adv = {0};
-    struct ble_hs_adv_fields  fields = {0};
 
-    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
-    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
-    fields.tx_pwr_lvl_is_present = 1;
-    fields.name = (uint8_t *)DEVICE_NAME;
-    fields.name_len = strlen(DEVICE_NAME);
-    fields.name_is_complete = 1;
-    fields.uuids128 = (ble_uuid128_t *)&SVC_UUID;
-    fields.num_uuids128 = 1;
-    fields.uuids128_is_complete = 1;
+    // Adv packet: flags + name only (31-byte limit; 128-bit UUID goes in scan rsp)
+    struct ble_hs_adv_fields fields = {0};
+    fields.flags               = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.name                = (uint8_t *)DEVICE_NAME;
+    fields.name_len            = strlen(DEVICE_NAME);
+    fields.name_is_complete    = 1;
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "adv_set_fields failed; rc=%d", rc);
+        return;
+    }
+
+    // Scan response: 128-bit service UUID so central can filter by service
+    struct ble_hs_adv_fields rsp = {0};
+    rsp.uuids128             = (ble_uuid128_t *)&SVC_UUID;
+    rsp.num_uuids128         = 1;
+    rsp.uuids128_is_complete = 1;
+    rc = ble_gap_adv_rsp_set_fields(&rsp);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "adv_rsp_set_fields failed; rc=%d", rc);
         return;
     }
 
