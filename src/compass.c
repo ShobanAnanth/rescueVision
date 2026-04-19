@@ -7,6 +7,7 @@
 #include <math.h>
 #include <string.h>
 
+
 #define I2C_SDA_GPIO    8
 #define I2C_SCL_GPIO    9
 // 100 kHz is a lot more forgiving with the ESP32's internal ~45k pull-ups.
@@ -51,6 +52,13 @@ static chip_kind_t s_chip = CHIP_NONE;
 static uint8_t s_data_reg = 0;
 static uint8_t s_status_reg = 0;
 static float s_lsb_per_ut = 1.0f;
+// NaN until the chip produces its first reading — lets dwm_geom's delayed
+// calibration distinguish "no sample yet" from "actually pointing at 0°".
+static volatile float s_heading_deg = NAN;
+
+float compass_get_heading_deg(void) {
+    return s_heading_deg;
+}
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = { reg, val };
@@ -165,8 +173,13 @@ static void compass_task(void *arg) {
         float z_uT = z / s_lsb_per_ut;
         float mag  = sqrtf(x_uT * x_uT + y_uT * y_uT + z_uT * z_uT);
 
-        float heading = atan2f((float)y, (float)x) * 180.0f / (float)M_PI;
+        // Cardinal heading: 0° when compass +Y axis points along magnetic
+        // north, increasing CW (90° = +X aligned with N, i.e. body facing E).
+        // Assumes flat mounting with +Y forward / +X right. If your mounting
+        // differs, swap the axes here or apply an offset in dwm_geom.
+        float heading = atan2f((float)x, (float)y) * 180.0f / (float)M_PI;
         if (heading < 0.0f) heading += 360.0f;
+        s_heading_deg = heading;
 
         good++;
         ESP_LOGI(TAG, "raw=(%6d,%6d,%6d)  uT=(%6.1f,%6.1f,%6.1f)  |B|=%5.1fuT  hdg=%5.1f°",
