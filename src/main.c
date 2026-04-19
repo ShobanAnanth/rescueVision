@@ -11,8 +11,8 @@ static const char *TAG = "main";
 TaskHandle_t poop;
 void app_main(void) {
     ESP_LOGI(TAG, "app_main start");
-    //usb_manager_init();
-    //iwr6843_init();
+    usb_manager_init();
+    iwr6843_init();
     compass_init();
 
     // while (1) vTaskDelay(pdMS_TO_TICKS(1000));

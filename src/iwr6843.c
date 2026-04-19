@@ -144,9 +144,9 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
             case IWR_TLV_COMPRESSED_POINTS:
                 handle_compressed_points(payload + off, hdr.length);
                 break;
-            //case IWR_TLV_TARGET_LIST_3D:
-                //handle_target_list(payload + off, hdr.length);
-               // break;
+            case IWR_TLV_TARGET_LIST_3D:
+                handle_target_list(payload + off, hdr.length);
+                break;
             case IWR_TLV_VITAL_SIGNS:
                 handle_vital_signs(payload + off, hdr.length);
                 break;
@@ -160,8 +160,14 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
                          (unsigned)hdr.type, (unsigned)hdr.length);
                 break;
         }
-        uint32_t aligned_length = (hdr.length + 3) & ~(uint32_t)3;
-        off += aligned_length;
+        // No inter-TLV padding. TI's reference parser (parseFrame.py) and the
+        // mmWave SDK output writer pack TLVs back-to-back; the only padding is
+        // at the *end of the whole packet* to bring totalPacketLen up to a
+        // multiple of 32 bytes (see iwr_frame_header_t.totalPacketLen comment
+        // and parseFrame.py line 175). Per-TLV 4-byte alignment was a
+        // misinterpretation that caused 1–3 byte drift on TLVs whose length
+        // is not a multiple of 4 (e.g. TARGET_INDEX = numDetectedObj bytes).
+        off += hdr.length;
     }
 }
 
@@ -332,44 +338,90 @@ static void send_config_task(void *arg) {
         vTaskDelete(NULL);
     }
 
-    // Let the radar fully boot after DTR release (reset line may have been
-    // pulsed during enumeration). 2s is generous; TI's own visualizer waits
-    // a similar time before the first CLI send.
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    ESP_LOGI(TAG, "sending config (%u bytes)", (unsigned)CFG_TEXT_LEN);
+    bool config_success = false;
+    int reset_count = 0;
 
-    const char *p = CFG_TEXT;
-    const char *cfg_end = CFG_TEXT + CFG_TEXT_LEN;
-    char line[256];
+    while (!config_success && reset_count < 10) {
+        reset_count++;
+        // Failsafe: Hard-reset the IWR6843AOPEVM via the CP2105's DTR/RTS lines.
+        ESP_LOGI(TAG, "supervisor: pulsing NRESET via DTR/RTS to warm-boot radar (attempt %d)...", reset_count);
+        
+        // Step 1: Assert BOTH DTR (Reset) and RTS (SOP2 / Boot mode).
+        // If we don't pull RTS true, SOP2 floats HIGH and the radar boots into ROM Flashing Mode!
+        cdc_acm_host_set_control_line_state(s_cli_dev, true, true);
+        if (s_data_dev) cdc_acm_host_set_control_line_state(s_data_dev, true, true);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        
+        // Step 2: Release DTR (release Reset to boot), KEEP RTS asserted so SOP2 remains LOW (Functional Mode).
+        cdc_acm_host_set_control_line_state(s_cli_dev, false, true);
+        if (s_data_dev) cdc_acm_host_set_control_line_state(s_data_dev, false, true);
+        vTaskDelay(pdMS_TO_TICKS(100));
 
-    while (p < cfg_end) {
-        const char *eol = p;
-        while (eol < cfg_end && *eol != '\n' && *eol != '\r') eol++;
-        size_t len = eol - p;
-        if (len > 0 && len < sizeof(line)) {
-            memcpy(line, p, len);
-            line[len] = '\0';
+        // Step 3: Idle everything.
+        cdc_acm_host_set_control_line_state(s_cli_dev, false, false);
+        if (s_data_dev) cdc_acm_host_set_control_line_state(s_data_dev, false, false);
 
-            char *s = line;
-            while (*s == ' ' || *s == '\t') s++;
-            size_t slen = strlen(s);
-            while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t')) {
-                s[--slen] = '\0';
-            }
+        // Let the radar fully boot after DTR release. Wait 3s instead of 2.2s
+        // just to be ultra safe that the bootloader initialized CLI.
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        
+        // Purge the queue/semaphore of any startup trash
+        xSemaphoreTake(s_cli_ack_sem, 0);
+        send_cli_command(""); // send newline to sync prompt
+        vTaskDelay(pdMS_TO_TICKS(50));
 
-            if (*s && *s != '%') {
-                int r = send_cli_command(s);
-                if (r != 0) {
-                    ESP_LOGW(TAG, "   (cmd result %d, continuing)", r);
+        ESP_LOGI(TAG, "sending config (%u bytes)", (unsigned)CFG_TEXT_LEN);
+
+        const char *p = CFG_TEXT;
+        const char *cfg_end = CFG_TEXT + CFG_TEXT_LEN;
+        char line[256];
+        bool failed_this_cycle = false;
+        int timeouts = 0;
+
+        while (p < cfg_end) {
+            const char *eol = p;
+            while (eol < cfg_end && *eol != '\n' && *eol != '\r') eol++;
+            size_t len = eol - p;
+            if (len > 0 && len < sizeof(line)) {
+                memcpy(line, p, len);
+                line[len] = '\0';
+
+                char *s = line;
+                while (*s == ' ' || *s == '\t') s++;
+                size_t slen = strlen(s);
+                while (slen > 0 && (s[slen - 1] == ' ' || s[slen - 1] == '\t')) {
+                    s[--slen] = '\0';
                 }
-                vTaskDelay(pdMS_TO_TICKS(30));
+
+                if (*s && *s != '%') {
+                    int r = send_cli_command(s);
+                    if (r == -4) {
+                        timeouts++;
+                        if (timeouts >= 3) {
+                            ESP_LOGE(TAG, "   (excessive timeouts, hardware looks dead. resetting)");
+                            failed_this_cycle = true;
+                            break;
+                        }
+                    } else if (r == -5) {
+                        ESP_LOGE(TAG, "   (cmd error %d on %s, ignoring but noting)", r, s);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(30));
+                }
             }
+            p = eol;
+            while (p < cfg_end && (*p == '\n' || *p == '\r')) p++;
         }
-        p = eol;
-        while (p < cfg_end && (*p == '\n' || *p == '\r')) p++;
+
+        if (!failed_this_cycle) {
+            config_success = true;
+        }
     }
 
-    ESP_LOGI(TAG, "config complete — waiting for data frames");
+    if (config_success) {
+        ESP_LOGI(TAG, "config complete — waiting for data frames");
+    } else {
+        ESP_LOGE(TAG, "config permanently failed after multiple reboot attempts!");
+    }
     vTaskDelete(NULL);
 }
 
@@ -406,7 +458,7 @@ static void open_data_port_task(void *arg) {
 static void open_cli_port_task(void *arg) {
     cdc_acm_host_device_config_t cfg = {
         .connection_timeout_ms = 30000,
-        .out_buffer_size       = 256,
+        .out_buffer_size       = 4096,
         .in_buffer_size        = CLI_IN_BUF,
         .event_cb              = dev_event_cb,
         .data_cb               = cli_rx_cb,
@@ -447,5 +499,5 @@ void iwr6843_init(void) {
     xTaskCreate(parser_task,         "iwr_parser",   8192, NULL, 6, NULL);
     xTaskCreate(open_cli_port_task,  "iwr_cli_open", 4096, NULL, 5, NULL);
     xTaskCreate(open_data_port_task, "iwr_data_open",4096, NULL, 5, NULL);
-    xTaskCreate(send_config_task,    "iwr_cfg",      4096, NULL, 4, NULL);
+    xTaskCreate(send_config_task,    "iwr_cfg",      4096, NULL, 8, NULL);
 }

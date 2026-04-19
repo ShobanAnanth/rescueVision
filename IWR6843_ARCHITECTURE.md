@@ -55,10 +55,14 @@ Three major flaws in the binary parsing loop were identified and resolved to pre
 **The Fix:** Instead of requesting bytes sequentially, the parser waits firmly for just `0x02` (the first magic byte), and only then requests the remaining 7 bytes. If it fails, it instantly resets.
 **Source:** FreeRTOS API Reference on `xStreamBufferReceive` context-switching limits.
 
-### Flaw C: Hardware TLV Memory Padding (Alignment Faults)
-**The Vulnerability:** The TI SDK uses EDMA (Enhanced Direct Memory Access) to copy structurally diverse C objects out the UART port. If a struct's byte length isn't a multiple of 4 (32-bit words), the firmware pads it with trailing `0x00` nulls so the next TLV header rests on a healthy aligned boundary. The old code strictly added `hdr.length` to the read offset. If the length was `14`, the parser jumped 14 bytes into the stream and attempted to read the next `type` variables entirely out of `0x00` padding garbage, dropping the frame.
-**The Fix:** Forced bitwise mathematical alignment: `uint32_t aligned_length = (hdr.length + 3) & ~(uint32_t)3; off += aligned_length;`
-**Source:** TI E2E Engineering Forums discussions on mmWave SDK TLV padding and 32-bit hardware bus alignment rules.
+### Flaw C (CORRECTED): Per-TLV alignment was wrong, *whole-packet* alignment is right
+**Earlier (incorrect) claim:** That each TLV payload is padded up to a 4-byte boundary, so the parser must do `off += (hdr.length + 3) & ~3`. This was sourced from misread E2E forum threads and produced 1–3 byte drift per TLV whenever a payload length wasn't already aligned (notably `TARGET_INDEX`, which is exactly `numDetectedObj` bytes).
+**Reality:** TLVs are packed back-to-back with **no inter-TLV padding**. The *only* padding is at the end of the whole packet, where the SDK rounds the total transmission up to the next multiple of 32 bytes; this is reflected in `totalPacketLen` and is implicit in our `remaining = totalPacketLen - 40` payload buffer (the trailing zero bytes are simply never read because the parser stops after `numTLVs` iterations).
+**Sources verified:**
+- TI's reference Python parser `parseFrame.py` (in this repo, line 175): `frameData = frameData[tlvLength:]` — raw advance, no alignment.
+- TI Vital Signs / People Counting demo docs ("Understanding UART Data Output Format"): "The end of the packet is padded so that the total packet length is always a multiple of 32 Bytes."
+- The 32-byte (not 4-byte) padding is also documented in `iwr_frame_header_t.totalPacketLen` in `include/iwr6843.h`.
+**Current code:** `parse_tlvs` uses `off += hdr.length;` directly.
 
 ---
 

@@ -52,7 +52,9 @@ void usb_manager_init(void) {
         .intr_flags     = ESP_INTR_FLAG_LEVEL1,
     };
     ESP_ERROR_CHECK(usb_host_install(&host_cfg));
-    xTaskCreate(usb_host_task,  "usb_host",  4096, NULL, 2, NULL);
+    // CRITICAL: usb_host_task MUST have a higher priority than tasks submitting URBs
+    // like send_config_task (4) or iwr_parser (6) to prevent Bulk OUT timeouts.
+    xTaskCreate(usb_host_task,  "usb_host",  4096, NULL, 10, NULL);
 
     ESP_ERROR_CHECK(cdc_acm_host_install(NULL));
     ESP_LOGI(TAG, "USB host + CDC-ACM ready");

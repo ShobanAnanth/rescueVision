@@ -31,7 +31,7 @@ static const char VITAL_SIGNS_CFG[] =
     "staticRangeAngleCfg -1 0 8 8\n"
     "\n"
     "% Re-extending to 2.0s to allow the breathing FFT to resolve\n"
-    "fineMotionCfg -1 1 2.0 10 2\n"
+    "fineMotionCfg -1 1 2 10 2\n"
     "bpmCfg -1 1 0 2\n"
     "\n"
     "antGeometry0 -1 -1 0 0 -3 -3 -2 -2 -1 -1 0 0\n"
