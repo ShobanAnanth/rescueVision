@@ -55,6 +55,20 @@ static float s_lsb_per_ut = 1.0f;
 // NaN until the chip produces its first reading — lets dwm_geom's delayed
 // calibration distinguish "no sample yet" from "actually pointing at 0°".
 static volatile float s_heading_deg = NAN;
+static volatile float s_north_offset_deg = COMPASS_NORTH_OFFSET_DEG;
+static volatile bool  s_calibrated = false;
+
+bool compass_is_calibrated(void) { return s_calibrated; }
+
+// Online hard-iron + soft-iron calibration via running min/max.
+// After one slow 360° rotation the offsets converge and stay valid.
+// No manual calibration constants needed.
+#include <float.h>
+static float s_x_min =  FLT_MAX, s_x_max = -FLT_MAX;
+static float s_y_min =  FLT_MAX, s_y_max = -FLT_MAX;
+// Minimum observed range (µT) on each axis before we trust calibration.
+// Below this threshold we fall back to the uncalibrated reading.
+#define CAL_MIN_RANGE_UT 2.0f
 
 float compass_get_heading_deg(void) {
     return s_heading_deg;
@@ -140,59 +154,175 @@ static esp_err_t configure_chip(void) {
     }
 }
 
-static void compass_task(void *arg) {
-    uint32_t good = 0, stale = 0;
-    TickType_t last_report = xTaskGetTickCount();
+#define NORTH_STABLE_DEG  180.0f
+#define NORTH_HOLD_SECS   10
+#define NORTH_BUF_SIZE    (NORTH_HOLD_SECS * 10)   // 10 Hz × 10 s
 
+// Read one sample, blocking until DRDY. Returns false on I2C error.
+static bool read_sample(float *x_uT, float *y_uT, float *z_uT, float *mag) {
     for (;;) {
         uint8_t status = 0;
-        if (reg_read(s_status_reg, &status, 1) != ESP_OK) {
-            ESP_LOGW(TAG, "status read failed");
+        if (reg_read(s_status_reg, &status, 1) != ESP_OK) return false;
+        if (status & 0x01) break;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    uint8_t d[6];
+    if (reg_read(s_data_reg, d, 6) != ESP_OK) return false;
+    int16_t x = (int16_t)((d[1] << 8) | d[0]);
+    int16_t y = (int16_t)((d[3] << 8) | d[2]);
+    int16_t z = (int16_t)((d[5] << 8) | d[4]);
+    *x_uT = x / s_lsb_per_ut;
+    *y_uT = y / s_lsb_per_ut;
+    *z_uT = z / s_lsb_per_ut;
+    *mag  = sqrtf((*x_uT) * (*x_uT) + (*y_uT) * (*y_uT) + (*z_uT) * (*z_uT));
+    return true;
+}
+
+// Compute calibrated heading from raw µT values.
+static float compute_heading(float x_uT, float y_uT) {
+    float x_range = (s_x_max - s_x_min) * 0.5f;
+    float y_range = (s_y_max - s_y_min) * 0.5f;
+    float xn, yn;
+    if (x_range > CAL_MIN_RANGE_UT && y_range > CAL_MIN_RANGE_UT) {
+        xn = (x_uT - (s_x_min + s_x_max) * 0.5f) / x_range;
+        yn = (y_uT - (s_y_min + s_y_max) * 0.5f) / y_range;
+    } else {
+        xn = x_uT; yn = y_uT;
+    }
+    float h = atan2f(xn, yn) * 180.0f / (float)M_PI + s_north_offset_deg;
+    if (h < 0.0f)    h += 360.0f;
+    if (h >= 360.0f) h -= 360.0f;
+    return h;
+}
+
+static void compass_task(void *arg) {
+    float x_uT, y_uT, z_uT, mag;
+
+    // ── PHASE 1: hard-iron calibration ───────────────────────────────────────
+    ESP_LOGI(TAG, "┌─────────────────────────────────────────────────┐");
+    ESP_LOGI(TAG, "│  CALIBRATION PHASE 1                            │");
+    ESP_LOGI(TAG, "│  Rotate the sensor SLOWLY through a full 360°.  │");
+    ESP_LOGI(TAG, "│  Keep rotating until you see PHASE 2.           │");
+    ESP_LOGI(TAG, "└─────────────────────────────────────────────────┘");
+
+    TickType_t last_progress = xTaskGetTickCount();
+    for (;;) {
+        if (!read_sample(&x_uT, &y_uT, &z_uT, &mag)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        if (x_uT < s_x_min) s_x_min = x_uT;
+        if (x_uT > s_x_max) s_x_max = x_uT;
+        if (y_uT < s_y_min) s_y_min = y_uT;
+        if (y_uT > s_y_max) s_y_max = y_uT;
+
+        s_heading_deg = compute_heading(x_uT, y_uT);
+
+        float xr = (s_x_max - s_x_min) * 0.5f;
+        float yr = (s_y_max - s_y_min) * 0.5f;
+        if (xr > CAL_MIN_RANGE_UT && yr > CAL_MIN_RANGE_UT) break;
+
+        if ((xTaskGetTickCount() - last_progress) > pdMS_TO_TICKS(1000)) {
+            ESP_LOGI(TAG, "  rotating... x_range=%.1f µT  y_range=%.1f µT  (need >%.1f each)",
+                     xr * 2.0f, yr * 2.0f, CAL_MIN_RANGE_UT * 2.0f);
+            last_progress = xTaskGetTickCount();
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ESP_LOGI(TAG, "  hard-iron calibration converged ✓");
+
+    // ── PHASE 2: north alignment ──────────────────────────────────────────────
+    ESP_LOGI(TAG, "┌─────────────────────────────────────────────────┐");
+    ESP_LOGI(TAG, "│  CALIBRATION PHASE 2                            │");
+    ESP_LOGI(TAG, "│  Point the sensor at MAGNETIC NORTH and hold    │");
+    ESP_LOGI(TAG, "│  perfectly still for 10 seconds.                │");
+    ESP_LOGI(TAG, "└─────────────────────────────────────────────────┘");
+
+    float north_buf[NORTH_BUF_SIZE];
+    int   buf_idx = 0, buf_fill = 0;
+    int   last_countdown = -1;
+
+    for (;;) {
+        if (!read_sample(&x_uT, &y_uT, &z_uT, &mag)) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        // Keep updating hard-iron bounds while holding still (minor improvement).
+        if (x_uT < s_x_min) s_x_min = x_uT;
+        if (x_uT > s_x_max) s_x_max = x_uT;
+        if (y_uT < s_y_min) s_y_min = y_uT;
+        if (y_uT > s_y_max) s_y_max = y_uT;
+
+        float heading = compute_heading(x_uT, y_uT);
+        s_heading_deg = heading;
+
+        north_buf[buf_idx] = heading;
+        buf_idx = (buf_idx + 1) % NORTH_BUF_SIZE;
+        if (buf_fill < NORTH_BUF_SIZE) buf_fill++;
+
+        // Check spread over the full buffer window.
+        float mn = north_buf[0], mx = north_buf[0];
+        for (int i = 1; i < buf_fill; i++) {
+            if (north_buf[i] < mn) mn = north_buf[i];
+            if (north_buf[i] > mx) mx = north_buf[i];
+        }
+        float spread = mx - mn;
+        if (spread > 180.0f) spread = 360.0f - spread;
+
+        if (spread >= NORTH_STABLE_DEG) {
+            buf_fill = 0; buf_idx = 0; last_countdown = -1;
+            ESP_LOGI(TAG, "  moved (spread=%.1f° >= %.1f°) — hold still, hdg=%.1f°",
+                     spread, NORTH_STABLE_DEG, heading);
+        } else {
+            int secs_left = NORTH_HOLD_SECS - (buf_fill / 10);
+            if (secs_left != last_countdown) {
+                last_countdown = secs_left;
+                if (secs_left > 0)
+                    ESP_LOGI(TAG, "  holding north (hdg=%.1f°) — %d s remaining...", heading, secs_left);
+            }
+            if (buf_fill == NORTH_BUF_SIZE) break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    compass_calibrate_north();
+    s_calibrated = true;
+    ESP_LOGI(TAG, "┌─────────────────────────────────────────────────┐");
+    ESP_LOGI(TAG, "│  CALIBRATION COMPLETE — normal operation start  │");
+    ESP_LOGI(TAG, "└─────────────────────────────────────────────────┘");
+
+    // ── PHASE 3: normal operation ─────────────────────────────────────────────
+    TickType_t last_report = xTaskGetTickCount();
+    for (;;) {
+        if (!read_sample(&x_uT, &y_uT, &z_uT, &mag)) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
-        if (!(status & 0x01)) {
-            stale++;
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
-
-        uint8_t d[6];
-        if (reg_read(s_data_reg, d, 6) != ESP_OK) {
-            ESP_LOGW(TAG, "data read failed");
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        int16_t x = (int16_t)((d[1] << 8) | d[0]);
-        int16_t y = (int16_t)((d[3] << 8) | d[2]);
-        int16_t z = (int16_t)((d[5] << 8) | d[4]);
-
-        float x_uT = x / s_lsb_per_ut;
-        float y_uT = y / s_lsb_per_ut;
-        float z_uT = z / s_lsb_per_ut;
-        float mag  = sqrtf(x_uT * x_uT + y_uT * y_uT + z_uT * z_uT);
-
-        // Cardinal heading: 0° when compass +Y axis points along magnetic
-        // north, increasing CW (90° = +X aligned with N, i.e. body facing E).
-        // Assumes flat mounting with +Y forward / +X right. If your mounting
-        // differs, swap the axes here or apply an offset in dwm_geom.
-        float heading = atan2f((float)x, (float)y) * 180.0f / (float)M_PI;
-        if (heading < 0.0f) heading += 360.0f;
+        float heading = compute_heading(x_uT, y_uT);
         s_heading_deg = heading;
-
-        good++;
-        ESP_LOGI(TAG, "raw=(%6d,%6d,%6d)  uT=(%6.1f,%6.1f,%6.1f)  |B|=%5.1fuT  hdg=%5.1f°",
-                 x, y, z, x_uT, y_uT, z_uT, mag, heading);
+        ESP_LOGI(TAG, "uT=(%5.1f,%5.1f,%5.1f)  |B|=%5.1fuT  hdg=%5.1f°",
+                 x_uT, y_uT, z_uT, mag, heading);
 
         if ((xTaskGetTickCount() - last_report) > pdMS_TO_TICKS(5000)) {
-            ESP_LOGI(TAG, "stats: %u good, %u stale polls (|B| should be 25–65 µT on Earth)",
-                     good, stale);
-            good = stale = 0;
+            float xr = (s_x_max - s_x_min) * 0.5f;
+            float yr = (s_y_max - s_y_min) * 0.5f;
+            ESP_LOGI(TAG, "  cal: x_off=%.2f xr=%.2f  y_off=%.2f yr=%.2f  north_off=%.1f°",
+                     (s_x_min + s_x_max) * 0.5f, xr,
+                     (s_y_min + s_y_max) * 0.5f, yr,
+                     s_north_offset_deg);
             last_report = xTaskGetTickCount();
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+void compass_calibrate_north(void) {
+    float raw = s_heading_deg - s_north_offset_deg;
+    if (raw < 0.0f)    raw += 360.0f;
+    if (raw >= 360.0f) raw -= 360.0f;
+    s_north_offset_deg = -raw;
+    ESP_LOGI(TAG, "north reference set: offset=%.1f°  (hardcode COMPASS_NORTH_OFFSET_DEG %.1ff to persist across reboots)",
+             s_north_offset_deg, s_north_offset_deg);
 }
 
 void compass_init(void) {

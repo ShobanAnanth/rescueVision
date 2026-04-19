@@ -33,6 +33,15 @@ float dwm_get_assembly_world_heading_deg(void) {
     return wrap_360(s_world_heading_ref_deg - delta_ccw);
 }
 
+float dwm_get_stepper_angle_for_heading(float world_heading_deg) {
+    // Inverse of the above: given a desired world heading, calculate the
+    // stepper angle that achieves it.
+    // world_heading = world_heading_ref - (stepper_angle - stepper_ref)
+    // => stepper_angle = stepper_ref - (world_heading - world_heading_ref)
+    float delta_ccw = world_heading_deg - s_world_heading_ref_deg;
+    return wrap_360(s_stepper_ref_deg - delta_ccw);
+}
+
 void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,
                            dwm_point_t *out) {
     // Work in mm to match the offset constants.
@@ -95,34 +104,18 @@ void dwm_geom_calibrate_zero(void) {
              s_stepper_ref_deg, s_world_heading_ref_deg);
 }
 
-// Polls compass at startup until it produces a real reading, then captures
-// the world-heading reference. Falls back to whatever the compass returned
-// after MAX_WAIT_MS even if we hit timeout.
+// Waits for the full compass calibration (both phases complete), then captures
+// the world-heading reference. Called from dwm_geom_init(); blocks in a task
+// until compass_is_calibrated() returns true.
 static void dwm_calibrate_task(void *arg) {
-    const TickType_t POLL_PERIOD = pdMS_TO_TICKS(100);
-    const int MAX_WAIT_MS = 5000;
-    int waited_ms = 0;
-
-    while (waited_ms < MAX_WAIT_MS) {
-        if (!isnan(compass_get_heading_deg())) break;
-        vTaskDelay(POLL_PERIOD);
-        waited_ms += 100;
+    while (!compass_is_calibrated()) {
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
-
-    if (isnan(compass_get_heading_deg())) {
-        ESP_LOGW(TAG, "compass never reported a heading after %dms — "
-                      "world reference left at 0°; rotations will be relative only",
-                 MAX_WAIT_MS);
-        s_stepper_ref_deg       = stepper_get_angle_deg();
-        s_world_heading_ref_deg = 0.0f;
-        s_calibrated = true;
-    } else {
-        // Give the chip a couple more samples for the value to stabilise.
-        vTaskDelay(pdMS_TO_TICKS(300));
-        dwm_geom_calibrate_zero();
-    }
+    dwm_geom_calibrate_zero();
     vTaskDelete(NULL);
 }
+
+bool dwm_geom_is_calibrated(void) { return s_calibrated; }
 
 // Periodic visibility into the heading pipeline so it's debuggable without
 // needing the IWR feed running.

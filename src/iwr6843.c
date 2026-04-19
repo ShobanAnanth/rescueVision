@@ -111,19 +111,6 @@ static void handle_compressed_points(const uint8_t *payload, uint32_t len) {
     }
 }
 
-static void handle_target_list(const uint8_t *payload, uint32_t len) {
-    uint32_t n = len / sizeof(iwr_target_t);
-    const iwr_target_t *tgts = (const iwr_target_t *)payload;
-    ESP_LOGI(TAG, "tracks: %u", (unsigned)n);
-    for (uint32_t i = 0; i < n; i++) {
-        ESP_LOGI(TAG, "   t%u pos=(%.2f,%.2f,%.2f) vel=(%.2f,%.2f,%.2f) conf=%.2f",
-                 (unsigned)tgts[i].tid,
-                 tgts[i].posX, tgts[i].posY, tgts[i].posZ,
-                 tgts[i].velX, tgts[i].velY, tgts[i].velZ,
-                 tgts[i].confidenceLevel);
-    }
-}
-
 static void handle_vital_signs(const uint8_t *payload, uint32_t len) {
     if (len < sizeof(iwr_vital_signs_t)) return;
     const iwr_vital_signs_t *vs = (const iwr_vital_signs_t *)payload;

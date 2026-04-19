@@ -1,4 +1,5 @@
 #pragma once
+#include <stdbool.h>
 
 // Transforms IWR6843 point-cloud detections into the DWM's coordinate frame
 // and into a world frame anchored to the compass at boot.
@@ -38,6 +39,9 @@ typedef struct {
 // and stepper angle as the world reference. Call after compass_init() and
 // initStepper(). The compass may not have produced a sample yet at this
 // point \u2014 call dwm_geom_calibrate_zero() again later once it has settled.
+// Returns true once the world-frame reference has been captured from the compass.
+bool dwm_geom_is_calibrated(void);
+
 void dwm_geom_init(void);
 
 // Re-capture compass heading + stepper angle as the new world-frame zero.
@@ -46,6 +50,11 @@ void dwm_geom_calibrate_zero(void);
 // Current heading of the IWR/DWM assembly in world frame (degrees, CCW-positive).
 //   = world_heading_at_boot + (stepper_angle_now - stepper_ref)
 float dwm_get_assembly_world_heading_deg(void);
+
+// Calculate the stepper angle (motor position) needed to point in a given
+// world-frame direction. E.g., dwm_get_stepper_angle_for_heading(0.0f) returns
+// the stepper angle that points north. Only valid after calibration.
+float dwm_get_stepper_angle_for_heading(float world_heading_deg);
 
 // Transform an IWR-frame point (Cartesian, meters) to DWM + world frames.
 void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,

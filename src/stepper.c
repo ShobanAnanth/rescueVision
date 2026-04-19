@@ -1,10 +1,14 @@
 #include "stepper.h"
 #include <stdio.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "dwm_geom.h"
+#include "esp_log.h"
+
+static const char *TAG = "stepper";
 
 float angle = 0.0f;
 
@@ -18,8 +22,6 @@ static const uint8_t step_sequence[4][4] = {
     {0, 1, 0, 1},
     {1, 0, 0, 1},
 };
-
-static SemaphoreHandle_t turn_sem;
 
 static void enable_pwm_init(void)
 {
@@ -64,24 +66,41 @@ static void apply_step(int idx)
     gpio_set_level(IN4_PIN, s[3]);
 }
 
-static void run_quarter_turn(int *step_idx, int direction)
+// Normalize angle to [0, 360)
+static float wrap_360(float a) {
+    a = fmodf(a, 360.0f);
+    if (a < 0.0f) a += 360.0f;
+    return a;
+}
+
+// Calculate shortest angular distance between two angles (handles wraparound)
+static float angle_delta(float from_deg, float to_deg) {
+    float delta = to_deg - from_deg;
+    while (delta > 180.0f) delta -= 360.0f;
+    while (delta < -180.0f) delta += 360.0f;
+    return delta;
+}
+
+// Turn the stepper to an absolute angle (in degrees, CCW-positive)
+static void turn_to_angle(int *step_idx, float target_deg)
 {
     const float deg_per_step = 360.0f / STEPS_PER_REV;
-    for (int i = 0; i < STEPS_PER_90; i++) {
+
+    // Calculate shortest path to target
+    target_deg = wrap_360(target_deg);
+    float current = wrap_360(angle);
+    float delta = angle_delta(current, target_deg);
+
+    int direction = (delta > 0) ? CCW : CW;
+    int steps_needed = (int)(fabsf(delta) / deg_per_step + 0.5f);
+
+    for (int i = 0; i < steps_needed; i++) {
         apply_step(*step_idx);
         *step_idx = (*step_idx + 4 + direction) % 4;
         angle += direction * deg_per_step;
         if (angle >= 360.0f) angle -= 360.0f;
         else if (angle < 0.0f) angle += 360.0f;
         vTaskDelay(pdMS_TO_TICKS(STEP_PERIOD_MS));
-    }
-}
-
-static void dummy_timer_task(void *arg)
-{
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        xSemaphoreGive(turn_sem);
     }
 }
 
@@ -96,23 +115,28 @@ void initStepper()
         .pull_up_en   = 0,
     };
     gpio_config(&io_conf);
-
     enable_pwm_init();
-
-    turn_sem = xSemaphoreCreateBinary();
-    xTaskCreate(dummy_timer_task, "timer", 2048, NULL, 5, NULL);
 }
 
 void stepperTask()
 {
-    static const int turns[8] = { CW, CW, CW, CW, CCW, CCW, CCW, CCW };
+    // 0°=North, 90°=East, 180°=South, 270°=West — forward then backtrack
+    static const float world_headings[] = { 0.0f, 90.0f, 180.0f, 270.0f, 360.0f, 270.0f, 180.0f, 90.0f };
+    static const int num_targets = 8;
     int step_idx = 0;
 
+    // Block until compass + dwm_geom calibration are both complete
+    while (!dwm_geom_is_calibrated()) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
     while (1) {
-        for (int i = 0; i < 8; i++) {
-            printf("%s 90° (angle=%.1f)\n", turns[i] == CW ? "CW" : "CCW", angle);
-            run_quarter_turn(&step_idx, turns[i]);
-            xSemaphoreTake(turn_sem, portMAX_DELAY);
+        for (int i = 0; i < num_targets; i++) {
+            float target = dwm_get_stepper_angle_for_heading(world_headings[i]);
+            ESP_LOGI(TAG, "rotating to %.0f° (world heading)", world_headings[i]);
+            turn_to_angle(&step_idx, target);
+            ESP_LOGI(TAG, "arrived at %.0f° — holding for 3s", world_headings[i]);
+            vTaskDelay(pdMS_TO_TICKS(3000));
         }
     }
 }
