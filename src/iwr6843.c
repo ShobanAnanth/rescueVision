@@ -1,5 +1,6 @@
 #include "iwr6843.h"
 #include "dwm_geom.h"
+#include "ble_link.h"
 #include "vital_signs_cfg.h"
 #include "usb/cdc_acm_host.h"
 #include "usb/vcp_cp210x.h"
@@ -11,6 +12,7 @@
 #include "freertos/stream_buffer.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 // IWR6843AOPEVM CP2105 dual-UART bridge.
 // Per TI mmWave SDK AOP demo: interface 0 = Standard = CLI  @ 115200;
@@ -81,34 +83,88 @@ static void hex_dump_line(const uint8_t *buf, size_t n, size_t offset) {
 
 // ── TLV handlers ─────────────────────────────────────────────────────────────
 
-static void handle_compressed_points(const uint8_t *payload, uint32_t len) {
+// Survival filter: keep only confident detections within useful range.
+//   SNR_MIN_DB     — below this it's almost certainly noise / sidelobes
+//   RANGE_MIN_M    — IWR's near-field is dominated by leakage / ringdown
+//   RANGE_MAX_M    — beyond this distance_mm overflows uint16 (and the radar's
+//                    SNR floor would have killed it anyway)
+#define SNR_MIN_DB    12.0f
+#define RANGE_MIN_M   0.30f
+#define RANGE_MAX_M   6.00f
+#define MAX_PTS_OUT   256
+
+static void handle_compressed_points(uint32_t frame_num,
+                                     const uint8_t *payload, uint32_t len) {
     if (len < sizeof(iwr_point_unit_t)) return;
     const iwr_point_unit_t *pu = (const iwr_point_unit_t *)payload;
     const iwr_compressed_point_t *pts =
         (const iwr_compressed_point_t *)(payload + sizeof(iwr_point_unit_t));
     uint32_t n = (len - sizeof(iwr_point_unit_t)) / sizeof(iwr_compressed_point_t);
-    ESP_LOGI(TAG, "pc: %u pts  assemblyHdg=%.1f° (units r=%.3f az=%.3f el=%.3f dop=%.3f snr=%.3f)",
-             (unsigned)n, dwm_get_assembly_world_heading_deg(),
-             pu->rangeUnit, pu->azUnit, pu->elevUnit,
-             pu->dopplerUnit, pu->snrUnit);
+
+    float assembly_hdg = dwm_get_assembly_world_heading_deg();
+    ESP_LOGI(TAG, "pc: %u raw pts  assemblyHdg=%.1f°", (unsigned)n, assembly_hdg);
+
+    static ble_link_point_t out[MAX_PTS_OUT];
+    uint16_t kept = 0;
     uint32_t max_print = n < 3 ? n : 3;
-    for (uint32_t i = 0; i < max_print; i++) {
+
+    for (uint32_t i = 0; i < n && kept < MAX_PTS_OUT; i++) {
         float range = pts[i].range     * pu->rangeUnit;
         float az    = pts[i].azimuth   * pu->azUnit;
         float elev  = pts[i].elevation * pu->elevUnit;
-        float dop   = pts[i].doppler   * pu->dopplerUnit;
         float snr   = pts[i].snr       * pu->snrUnit;
+
+        if (snr < SNR_MIN_DB)      continue;
+        if (range < RANGE_MIN_M)   continue;
+        if (range > RANGE_MAX_M)   continue;
 
         dwm_point_t dp;
         dwm_transform_iwr_spherical(range, az, elev, &dp);
-        ESP_LOGI(TAG,
-                 "   [%u] iwr(r=%.2fm az=%+.2f el=%+.2f) → world(%.0f,%.0f,%.0f)mm "
-                 "distDWM=%.0fmm wbear=%+6.1f° wel=%+5.1f°  dop=%.2f snr=%.1f",
-                 (unsigned)i, range, az, elev,
-                 dp.world_x_mm, dp.world_y_mm, dp.world_z_mm,
-                 dp.distance_mm, dp.world_bearing_deg, dp.world_elevation_deg,
-                 dop, snr);
+
+        if (dp.distance_mm > 65535.0f) continue;
+
+        // Quantize to wire format.
+        float bearing = dp.world_bearing_deg;
+        if (bearing < 0.0f) bearing += 360.0f;
+        if (bearing >= 360.0f) bearing -= 360.0f;
+
+        float elev_cdeg_f = dp.world_elevation_deg * 100.0f;
+        if (elev_cdeg_f >  9000.0f) elev_cdeg_f =  9000.0f;
+        if (elev_cdeg_f < -9000.0f) elev_cdeg_f = -9000.0f;
+
+        out[kept].distance_mm    = (uint16_t)(dp.distance_mm + 0.5f);
+        out[kept].bearing_cdeg   = (uint16_t)(bearing * 100.0f + 0.5f);
+        out[kept].elevation_cdeg = (int16_t)lroundf(elev_cdeg_f);
+
+        if (i < max_print) {
+            float dop = pts[i].doppler * pu->dopplerUnit;
+            ESP_LOGI(TAG,
+                     "   [%u] iwr(r=%.2fm az=%+.2f el=%+.2f) → "
+                     "distDWM=%umm wbear=%u.%02u° wel=%+.1f°  dop=%.2f snr=%.1f",
+                     (unsigned)i, range, az, elev,
+                     out[kept].distance_mm,
+                     out[kept].bearing_cdeg / 100u, out[kept].bearing_cdeg % 100u,
+                     out[kept].elevation_cdeg / 100.0f,
+                     dop, snr);
+        }
+        kept++;
     }
+
+    if (kept == 0) {
+        ESP_LOGI(TAG, "   no points survived filter (SNR≥%.0fdB, %.2f–%.2fm) — frame dropped",
+                 SNR_MIN_DB, RANGE_MIN_M, RANGE_MAX_M);
+        return;
+    }
+
+    if (!ble_link_is_subscribed()) return;
+
+    float hdg = assembly_hdg;
+    if (hdg < 0.0f)    hdg += 360.0f;
+    if (hdg >= 360.0f) hdg -= 360.0f;
+    uint16_t hdg_cdeg = (uint16_t)(hdg * 100.0f + 0.5f);
+    uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+
+    ble_link_publish_frame(frame_num, ts_ms, hdg_cdeg, out, kept);
 }
 
 static void handle_target_list(const uint8_t *payload, uint32_t len) {
@@ -132,7 +188,8 @@ static void handle_vital_signs(const uint8_t *payload, uint32_t len) {
              vs->breathDeviation);
 }
 
-static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t num_tlvs) {
+static void parse_tlvs(uint32_t frame_num,
+                       const uint8_t *payload, uint32_t payload_len, uint32_t num_tlvs) {
     size_t off = 0;
     for (uint32_t i = 0; i < num_tlvs; i++) {
         if (sizeof(iwr_tlv_header_t) > payload_len - off) {
@@ -152,7 +209,7 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
 
         switch (hdr.type) {
             case IWR_TLV_COMPRESSED_POINTS:
-                handle_compressed_points(payload + off, hdr.length);
+                handle_compressed_points(frame_num, payload + off, hdr.length);
                 break;
             //case IWR_TLV_TARGET_LIST_3D:
                 //handle_target_list(payload + off, hdr.length);
@@ -230,7 +287,7 @@ static void parser_task(void *arg) {
                  (unsigned)frameNumber, (unsigned)numTLVs,
                  (unsigned)numDetectedObj, (unsigned)totalPacketLen);
 
-        parse_tlvs(payload, remaining, numTLVs);
+        parse_tlvs(frameNumber, payload, remaining, numTLVs);
         free(payload);
     }
 }
