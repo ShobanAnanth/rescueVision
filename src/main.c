@@ -5,6 +5,8 @@
 #include "stepper.h"
 #include "usb_manager.h"
 #include "iwr6843.h"
+#include "dwm_geom.h"
+#include "ble_link.h"
 
 static const char *TAG = "main";
 
@@ -19,4 +21,7 @@ void app_main(void) {
     
     initStepper();
     xTaskCreate(stepperTask, "stepper", 4096, NULL, 3, &poop);
+
+    dwm_geom_init();
+    ble_link_init();
 }

@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // BLE peripheral that streams IWR point-cloud frames to a single subscriber
 // (the DWM3001C, or nRF Connect for testing).
 //
@@ -26,15 +30,17 @@
 //       uint16_t distance_mm;         // straight-line from DWM, capped at 65535
 //       uint16_t bearing_cdeg;        // world bearing × 100, cardinal CW from N
 //       int16_t  elevation_cdeg;      // world elevation × 100, [-9000, +9000]
+//       uint16_t class_id;            // classification label (1=ACTIVE, 2=UNCONSCIOUS)
 //   };
 
 #define BLE_LINK_HEADER_BYTES   12
-#define BLE_LINK_POINT_BYTES    6
+#define BLE_LINK_POINT_BYTES    8
 
 typedef struct {
     uint16_t distance_mm;
     uint16_t bearing_cdeg;
     int16_t  elevation_cdeg;
+    uint16_t class_id;
 } __attribute__((packed)) ble_link_point_t;
 
 void ble_link_init(void);
@@ -51,3 +57,7 @@ bool ble_link_publish_frame(uint32_t frame_num,
                             uint16_t dwm_heading_cdeg,
                             const ble_link_point_t *points,
                             uint16_t num_points);
+
+#ifdef __cplusplus
+}
+#endif

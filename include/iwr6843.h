@@ -1,3 +1,10 @@
+// -----------------------------------------------------------------------------
+// OPERATIONAL MODES
+// -----------------------------------------------------------------------------
+//#define CSV_OUTPUT 1      // Un-comment to switch from Visual UI to ML CSV logging. (Also disables stepper rotation)
+#define HEURISTIC_GATES 2 // 0: Off, 1: Weak supervision C-Logic, 2: TFLite Neural Network
+
+// -----------------------------------------------------------------------------
 #pragma once
 #include <stdint.h>
 
@@ -61,4 +68,23 @@ typedef struct __attribute__((packed)) {
     float    breathWaveform[15];
 } iwr_vital_signs_t;              // 136 bytes
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern EventGroupHandle_t g_iwr_state_group;
+#define IWR_STATE_CONFIG_DONE (1 << 0)
+#define IWR_STATE_FRAME_RECV  (1 << 1)
+
+extern volatile bool g_pause_iwr_listening;
+
 void iwr6843_init(void);
+void iwr6843_pause_listening(bool pause);
+bool iwr6843_has_active_targets(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -29,8 +29,12 @@ static float wrap_360(float a) {
 float dwm_get_assembly_world_heading_deg(void) {
     // Cardinal heading is CW-positive (0=N, 90=E). Stepper `angle` is
     // CCW-positive. CCW body rotation = lower compass bearing, so subtract.
-    float delta_ccw = stepper_get_angle_deg() - s_stepper_ref_deg;
+    float delta_ccw = angle - s_stepper_ref_deg;
     return wrap_360(s_world_heading_ref_deg - delta_ccw);
+}
+
+bool dwm_geom_is_calibrated(void) {
+    return s_calibrated;
 }
 
 void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,
@@ -40,15 +44,15 @@ void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,
     float y_iwr_mm = y_iwr_m * 1000.0f;
     float z_iwr_mm = z_iwr_m * 1000.0f;
 
-    // 1. Translate so the DWM origin sits at zero in the IWR frame.
-    float tx = x_iwr_mm - DWM_GEOM_OFFSET_X_MM;
-    float ty = y_iwr_mm - DWM_GEOM_OFFSET_Y_MM;
-    float tz = z_iwr_mm - DWM_GEOM_OFFSET_Z_MM;
+    // 1. Rotate by Rx(+TILT) to bring the IWR axes parallel to the DWM axes.
+    float rx = x_iwr_mm;
+    float ry = s_cos_tilt * y_iwr_mm - s_sin_tilt * z_iwr_mm;
+    float rz = s_sin_tilt * y_iwr_mm + s_cos_tilt * z_iwr_mm;
 
-    // 2. Rotate by Rx(+TILT) to convert IWR axes → DWM axes.
-    out->dwm_x_mm = tx;
-    out->dwm_y_mm = s_cos_tilt * ty - s_sin_tilt * tz;
-    out->dwm_z_mm = s_sin_tilt * ty + s_cos_tilt * tz;
+    // 2. Translate by the vector FROM the DWM TO the sensor (adding the offset).
+    out->dwm_x_mm = rx + DWM_GEOM_OFFSET_X_MM;
+    out->dwm_y_mm = ry + DWM_GEOM_OFFSET_Y_MM;
+    out->dwm_z_mm = rz + DWM_GEOM_OFFSET_Z_MM;
 
     // 3. Rotate DWM body → world. Heading H is CW from world +Y (north),
     //    world axes are +X = east, +Y = north, +Z = up. The matrix that takes
@@ -88,7 +92,7 @@ void dwm_geom_calibrate_zero(void) {
         ESP_LOGW(TAG, "calibrate skipped: compass has no reading yet");
         return;
     }
-    s_stepper_ref_deg       = stepper_get_angle_deg();
+    s_stepper_ref_deg       = angle;
     s_world_heading_ref_deg = compass;
     s_calibrated = true;
     ESP_LOGI(TAG, "calibrated zero: stepper_ref=%.2f°  world_heading_ref=%.2f° (cardinal)",
@@ -113,7 +117,7 @@ static void dwm_calibrate_task(void *arg) {
         ESP_LOGW(TAG, "compass never reported a heading after %dms — "
                       "world reference left at 0°; rotations will be relative only",
                  MAX_WAIT_MS);
-        s_stepper_ref_deg       = stepper_get_angle_deg();
+        s_stepper_ref_deg       = angle;
         s_world_heading_ref_deg = 0.0f;
         s_calibrated = true;
     } else {
@@ -129,7 +133,7 @@ static void dwm_calibrate_task(void *arg) {
 static void dwm_geom_log_task(void *arg) {
     for (;;) {
         float compass = compass_get_heading_deg();
-        float stepper = stepper_get_angle_deg();
+        float stepper = angle;
         float delta   = stepper - s_stepper_ref_deg;
         if (s_calibrated) {
             ESP_LOGI(TAG,

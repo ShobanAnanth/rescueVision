@@ -1,4 +1,9 @@
 #pragma once
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Transforms IWR6843 point-cloud detections into the DWM's coordinate frame
 // and into a world frame anchored to the compass at boot.
@@ -43,6 +48,9 @@ void dwm_geom_init(void);
 // Re-capture compass heading + stepper angle as the new world-frame zero.
 void dwm_geom_calibrate_zero(void);
 
+// Check if compass has securely anchored to the world frame.
+bool dwm_geom_is_calibrated(void);
+
 // Current heading of the IWR/DWM assembly in world frame (degrees, CCW-positive).
 //   = world_heading_at_boot + (stepper_angle_now - stepper_ref)
 float dwm_get_assembly_world_heading_deg(void);
@@ -56,3 +64,6 @@ void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,
 // azimuth measured from +Y in the X/Y plane, elevation from the X/Y plane.
 void dwm_transform_iwr_spherical(float range_m, float az_rad, float el_rad,
                                  dwm_point_t *out);
+#ifdef __cplusplus
+}
+#endif
