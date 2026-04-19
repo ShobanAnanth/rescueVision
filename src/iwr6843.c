@@ -1,4 +1,5 @@
 #include "iwr6843.h"
+#include "dwm_geom.h"
 #include "vital_signs_cfg.h"
 #include "usb/cdc_acm_host.h"
 #include "usb/vcp_cp210x.h"
@@ -86,8 +87,9 @@ static void handle_compressed_points(const uint8_t *payload, uint32_t len) {
     const iwr_compressed_point_t *pts =
         (const iwr_compressed_point_t *)(payload + sizeof(iwr_point_unit_t));
     uint32_t n = (len - sizeof(iwr_point_unit_t)) / sizeof(iwr_compressed_point_t);
-    ESP_LOGI(TAG, "pc: %u pts (units r=%.3f az=%.3f el=%.3f dop=%.3f snr=%.3f)",
-             (unsigned)n, pu->rangeUnit, pu->azUnit, pu->elevUnit,
+    ESP_LOGI(TAG, "pc: %u pts  assemblyHdg=%.1f° (units r=%.3f az=%.3f el=%.3f dop=%.3f snr=%.3f)",
+             (unsigned)n, dwm_get_assembly_world_heading_deg(),
+             pu->rangeUnit, pu->azUnit, pu->elevUnit,
              pu->dopplerUnit, pu->snrUnit);
     uint32_t max_print = n < 3 ? n : 3;
     for (uint32_t i = 0; i < max_print; i++) {
@@ -96,8 +98,16 @@ static void handle_compressed_points(const uint8_t *payload, uint32_t len) {
         float elev  = pts[i].elevation * pu->elevUnit;
         float dop   = pts[i].doppler   * pu->dopplerUnit;
         float snr   = pts[i].snr       * pu->snrUnit;
-        ESP_LOGI(TAG, "   [%u] r=%.2f az=%.2f el=%.2f dop=%.2f snr=%.1f",
-                 (unsigned)i, range, az, elev, dop, snr);
+
+        dwm_point_t dp;
+        dwm_transform_iwr_spherical(range, az, elev, &dp);
+        ESP_LOGI(TAG,
+                 "   [%u] iwr(r=%.2fm az=%+.2f el=%+.2f) → world(%.0f,%.0f,%.0f)mm "
+                 "distDWM=%.0fmm wbear=%+6.1f° wel=%+5.1f°  dop=%.2f snr=%.1f",
+                 (unsigned)i, range, az, elev,
+                 dp.world_x_mm, dp.world_y_mm, dp.world_z_mm,
+                 dp.distance_mm, dp.world_bearing_deg, dp.world_elevation_deg,
+                 dop, snr);
     }
 }
 

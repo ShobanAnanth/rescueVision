@@ -8,6 +8,10 @@
 
 float angle = 0.0f;
 
+float stepper_get_angle_deg(void) {
+    return angle;
+}
+
 static const uint8_t step_sequence[4][4] = {
     {1, 0, 1, 0},
     {0, 1, 1, 0},

@@ -5,6 +5,7 @@
 #include "stepper.h"
 #include "usb_manager.h"
 #include "iwr6843.h"
+#include "dwm_geom.h"
 
 static const char *TAG = "main";
 
@@ -15,8 +16,10 @@ void app_main(void) {
     //iwr6843_init();
     compass_init();
 
-    // while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    //while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     
     initStepper();
     xTaskCreate(stepperTask, "stepper", 4096, NULL, 3, &poop);
+
+    dwm_geom_init();
 }

@@ -29,4 +29,7 @@ extern float angle;
 void initStepper();
 void stepperTask();
 
+// Current stepper angle in degrees, CCW-positive (matches the `angle` global).
+float stepper_get_angle_deg(void);
+
 #endif
