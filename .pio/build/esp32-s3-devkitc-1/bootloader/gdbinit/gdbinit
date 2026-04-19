@@ -1,0 +1,2 @@
+source /Users/adipu/rescueVision/.pio/build/esp32-s3-devkitc-1/bootloader/gdbinit/symbols
+source /Users/adipu/rescueVision/.pio/build/esp32-s3-devkitc-1/bootloader/gdbinit/connect
