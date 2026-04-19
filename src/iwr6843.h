@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 #define IWR_TLV_COMPRESSED_POINTS  1020  // MMWDEMO_OUTPUT_MSG_COMPRESSED_POINTS
-#define IWR_TLV_TARGET_LIST_3D     1010  // MMWDEMO_OUTPUT_MSG_TRACKERPROC_3D_TARGET_LIST
+#define IWR_TLV_TARGET_LIST_3D1010  // MMWDEMO_OUTPUT_MSG_TRACKERPROC_3D_TARGET_LIST
 #define IWR_TLV_TARGET_INDEX       1011  // MMWDEMO_OUTPUT_MSG_TRACKERPROC_TARGET_INDEX
 #define IWR_TLV_TARGET_HEIGHT      1012  // MMWDEMO_OUTPUT_MSG_TRACKERPROC_TARGET_HEIGHT
 #define IWR_TLV_PRESENCE          1021  // MMWDEMO_OUTPUT_MSG_PRESCENCE_INDICATION
@@ -13,7 +13,7 @@ typedef struct __attribute__((packed)) {
     uint32_t version;
     uint32_t totalPacketLen;     // padded to next multiple of 32
     uint32_t platform;
-    uint32_t frameNumber;
+    uint32_t frameNumber;  
     uint32_t timeCpuCycles;
     uint32_t numDetectedObj;
     uint32_t numTLVs;

@@ -144,9 +144,9 @@ static void parse_tlvs(const uint8_t *payload, uint32_t payload_len, uint32_t nu
             case IWR_TLV_COMPRESSED_POINTS:
                 handle_compressed_points(payload + off, hdr.length);
                 break;
-            case IWR_TLV_TARGET_LIST_3D:
-                handle_target_list(payload + off, hdr.length);
-                break;
+            //case IWR_TLV_TARGET_LIST_3D:
+                //handle_target_list(payload + off, hdr.length);
+               // break;
             case IWR_TLV_VITAL_SIGNS:
                 handle_vital_signs(payload + off, hdr.length);
                 break;
