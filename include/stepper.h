@@ -7,7 +7,7 @@
 #define IN1_PIN GPIO_NUM_47
 #define IN2_PIN GPIO_NUM_48
 #define IN3_PIN GPIO_NUM_45
-#define IN4_PIN GPIO_NUM_0
+#define IN4_PIN GPIO_NUM_38
 
 // ENA/ENB carry PWM to limit coil current and reduce L298N heating.
 // Remove the ENA/ENB jumpers and wire these pins instead.

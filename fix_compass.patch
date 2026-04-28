@@ -1,0 +1,14 @@
+--- src/compass.c	2026-04-25 15:58:00.000000000 -0400
++++ src/compass.c	2026-04-25 16:04:00.000000000 -0400
+@@ -39,9 +39,9 @@
+ // CTRL1: mode=Normal(11) | ODR=200Hz(11) | OSR1=8(01) | OSR2=8(01) => 0x5F
+ #define QMC5883P_CTRL1_VAL 0x5F
+-// CTRL2: SET/RESET ON, range = 8 Gauss
++// CTRL2: SET/RESET ON, range = 2 Gauss (bits 3:2 = 11)
+ #define QMC5883P_CTRL2_VAL 0x0C
+-// 8G range => 3750 LSB/G = 37.5 LSB/µT
+-#define QMC5883P_LSB_PER_UT 37.5f
++// 2G range => 15000 LSB/G = 150 LSB/µT (more sensitive, matches L chip intent)
++#define QMC5883P_LSB_PER_UT 150.0f
+ 
+ typedef enum { CHIP_NONE, CHIP_QMC5883L, CHIP_QMC5883P } chip_kind_t;
