@@ -17,6 +17,9 @@ class BLEManager: NSObject, ObservableObject {
     var onAccessoryData: ((Data) -> Void)?
     /// Called when a peripheral successfully connects, passing its UUID.
     var onConnected: ((UUID) -> Void)?
+    /// Called when a connected peripheral disconnects. Use this to tear down
+    /// dependent state (NI session, estimator) before the scan restarts.
+    var onDisconnected: (() -> Void)?
 
     /// The identifier of the currently connected peripheral, if any.
     private(set) var connectedPeripheralIdentifier: UUID?
@@ -120,17 +123,18 @@ extension BLEManager: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         print("[BLE] Failed to connect: \(error?.localizedDescription ?? "unknown")")
-        connectionState = .disconnected
         self.peripheral = nil
+        startScanning()
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         print("[BLE] Disconnected: \(error?.localizedDescription ?? "clean")")
-        connectionState = .disconnected
         connectedPeripheralIdentifier = nil
         self.peripheral = nil
         rxCharacteristic = nil
         txCharacteristic = nil
+        onDisconnected?()
+        startScanning()
     }
 }
 

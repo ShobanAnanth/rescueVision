@@ -8,6 +8,7 @@ struct NearbyDemoApp: App {
     @StateObject private var ni  = NIManager()
     @StateObject private var ar  = ARManager()
     @StateObject private var estimator = AnchorEstimator()
+    @StateObject private var rvBLE = RescueVisionBLEManager()
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,7 @@ struct NearbyDemoApp: App {
                 .environmentObject(ni)
                 .environmentObject(ar)
                 .environmentObject(estimator)
+                .environmentObject(rvBLE)
                 .onAppear {
                     wireManagers()
                     ar.start()
@@ -43,6 +45,14 @@ struct NearbyDemoApp: App {
         ble.onConnected = { [weak ni] peripheralID in
             ni?.peripheralIdentifier = peripheralID
             ni?.start()
+        }
+
+        // BLE disconnected → tear down NI session and clear all estimates so the
+        // app returns to the same clean state as on first launch. BLEManager will
+        // restart scanning immediately after firing this callback.
+        ble.onDisconnected = { [weak ni, weak estimator] in
+            ni?.stop()
+            estimator?.reset()
         }
 
         // NI camera-assisted world position → set directly on estimator, bypassing Gauss-Newton.

@@ -6,6 +6,7 @@ struct ContentView: View {
     @EnvironmentObject var ni: NIManager
     @EnvironmentObject var ar: ARManager
     @EnvironmentObject var estimator: AnchorEstimator
+    @EnvironmentObject var rvBLE: RescueVisionBLEManager
 
     var body: some View {
         ZStack {
@@ -30,7 +31,7 @@ struct ContentView: View {
             }
 
             VStack {
-                HUDView(ble: ble, ni: ni, estimator: estimator)
+                HUDView(ble: ble, ni: ni, estimator: estimator, rvBLE: rvBLE)
                     .padding()
                 Spacer()
                 Button("Reset Estimate") {
@@ -51,6 +52,7 @@ private struct HUDView: View {
     @ObservedObject var ble: BLEManager
     @ObservedObject var ni: NIManager
     @ObservedObject var estimator: AnchorEstimator
+    @ObservedObject var rvBLE: RescueVisionBLEManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -59,6 +61,7 @@ private struct HUDView: View {
             HUDRow(label: "Range", value: rangeText)
             HUDRow(label: "Measurements", value: "\(estimator.measurementCount)")
             HUDRow(label: "Residual", value: String(format: "%.3f m", estimator.residualError))
+            HUDRow(label: "Heading", value: headingText)
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -90,6 +93,13 @@ private struct HUDView: View {
         }
         return "—"
     }
+
+    private var headingText: String {
+        if let h = rvBLE.heading {
+            return String(format: "%.1f°", h)
+        }
+        return rvBLE.isConnected ? "—" : "No device"
+    }
 }
 
 private struct HUDRow: View {
@@ -115,4 +125,5 @@ private struct HUDRow: View {
         .environmentObject(NIManager())
         .environmentObject(ARManager())
         .environmentObject(AnchorEstimator())
+        .environmentObject(RescueVisionBLEManager())
 }

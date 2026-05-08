@@ -11,6 +11,7 @@
 		86A1B8EB2F931918007D8DF7 /* CoreBluetooth.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86A1B8EA2F931918007D8DF7 /* CoreBluetooth.framework */; };
 		86A1B8ED2F931920007D8DF7 /* ARKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86A1B8EC2F931920007D8DF7 /* ARKit.framework */; };
 		86A1B8EF2F93192A007D8DF7 /* RealityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86A1B8EE2F93192A007D8DF7 /* RealityKit.framework */; };
+		86A281192FAE6093003FB388 /* progress.md in Resources */ = {isa = PBXBuildFile; fileRef = 86A281182FAE6093003FB388 /* progress.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +36,7 @@
 		86A1B8EA2F931918007D8DF7 /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 		86A1B8EC2F931920007D8DF7 /* ARKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ARKit.framework; path = System/Library/Frameworks/ARKit.framework; sourceTree = SDKROOT; };
 		86A1B8EE2F93192A007D8DF7 /* RealityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = RealityKit.framework; path = System/Library/Frameworks/RealityKit.framework; sourceTree = SDKROOT; };
+		86A281182FAE6093003FB388 /* progress.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = progress.md; sourceTree = "<group>"; };
 		86D2C30E2F91DFA50031AF9B /* NearbyDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NearbyDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		86D2C31B2F91DFA80031AF9B /* NearbyDemoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NearbyDemoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		86D2C3252F91DFA80031AF9B /* NearbyDemoUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NearbyDemoUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -119,6 +121,7 @@
 				86D2C3282F91DFA80031AF9B /* NearbyDemoUITests */,
 				86A1B8E72F931911007D8DF7 /* Frameworks */,
 				86D2C30F2F91DFA50031AF9B /* Products */,
+				86A281182FAE6093003FB388 /* progress.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -252,6 +255,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				86A281192FAE6093003FB388 /* progress.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
