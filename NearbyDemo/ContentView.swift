@@ -35,6 +35,7 @@ struct ContentView: View {
                 Spacer()
                 Button("Reset Estimate") {
                     estimator.reset()
+                    ni.restartSession()
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.red.opacity(0.8))

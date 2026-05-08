@@ -73,7 +73,24 @@ struct ARViewContainer: UIViewRepresentable {
                 let cameraTransform = camera.transform
                 let localPos4 = simd_mul(simd_inverse(cameraTransform),
                                         simd_float4(position.x, position.y, position.z, 1.0))
-                let angle = Double(atan2(localPos4.y, localPos4.x))
+
+                // ARKit's camera transform uses landscape-right as its native frame regardless
+                // of device orientation: +X is landscape-right, +Y is landscape-up. We must
+                // rotate the camera-space angle to match the current screen orientation.
+                let orientation: UIInterfaceOrientation
+                if #available(iOS 26.0, *) {
+                    orientation = arView.window?.windowScene?.effectiveGeometry.interfaceOrientation ?? .landscapeRight
+                } else {
+                    orientation = arView.window?.windowScene?.interfaceOrientation ?? .landscapeRight
+                }
+                let orientationOffset: Double
+                switch orientation {
+                case .portrait:            orientationOffset = -.pi / 2
+                case .portraitUpsideDown:  orientationOffset =  .pi / 2
+                case .landscapeLeft:       orientationOffset =  .pi
+                default:                   orientationOffset =  0      // landscapeRight
+                }
+                let angle = Double(atan2(localPos4.y, localPos4.x)) + orientationOffset
                 if coordinator.lastAngle == nil || abs(coordinator.lastAngle! - angle) > 0.05 {
                     coordinator.lastAngle = angle
                     DispatchQueue.main.async { estimator.offScreenAngle = angle }

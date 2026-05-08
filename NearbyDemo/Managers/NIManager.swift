@@ -112,6 +112,22 @@ class NIManager: NSObject, ObservableObject {
         }
     }
 
+    /// Tear down the current NI session and restart the full UWB handshake from scratch.
+    /// Call this alongside AnchorEstimator.reset() so camera assistance reconverges on
+    /// fresh data rather than immediately re-publishing the old converged position.
+    func restartSession() {
+        restartWorkItem?.cancel()
+        sendToAccessory?(Data([MsgAppToAccessory.stop.rawValue]))
+        // Nil the delegate before invalidating so didInvalidateWith doesn't schedule
+        // a competing restart.
+        niSession?.delegate = nil
+        niSession?.invalidate()
+        niSession = nil
+        sessionState = .idle
+        lastRange = nil
+        start()
+    }
+
     // MARK: - Private
 
     private func startNISession(with accessoryData: Data) {
