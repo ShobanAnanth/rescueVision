@@ -98,29 +98,30 @@ void stepperTask()
     int step_idx = 0;
 
     printf("\n======================================================\n");
-    printf("[Stepper] ACTION REQUIRED: Please properly position the\n");
-    printf("          stepper mount manually now. The motor is free.\n");
-    printf("[Stepper] You have 10 seconds before the motor locks!\n");
+    printf("[Stepper] ACTION REQUIRED: Position the mount AND rotate the\n");
+    printf("          entire rig through a full 360° sweep to calibrate\n");
+    printf("          the compass. Motor locks when IWR begins streaming.\n");
     printf("======================================================\n\n");
-    
-    vTaskDelay(pdMS_TO_TICKS(10000));
-    
-    // Apply the first sequence step to actively energize the coils through the L298N.
-    // This locks the motor and generates holding torque!
-    apply_step(step_idx);
-    printf("[Stepper] Motor is now LOCKED.\n");
 
-    printf("[Stepper] Waiting for Compass Calibration...\n");
-    while (!dwm_geom_is_calibrated()) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    // Block until config is completely finished and we successfully hit a frame
-    printf("[Stepper] Waiting for IWR6843 configuration & first valid frame...\n");
+    // Lock the motor the moment the IWR sends its first valid frame.
+    // Compass calibration may still be in progress at this point — that is fine,
+    // since calibration rotates the whole device as a unit and the locked stepper
+    // does not resist that. The sweep loop waits for both gates before starting.
+    printf("[Stepper] Waiting for IWR6843 first valid frame to lock motor...\n");
     if (g_iwr_state_group != NULL) {
-        xEventGroupWaitBits(g_iwr_state_group, 
-                            IWR_STATE_CONFIG_DONE | IWR_STATE_FRAME_RECV, 
+        xEventGroupWaitBits(g_iwr_state_group,
+                            IWR_STATE_CONFIG_DONE | IWR_STATE_FRAME_RECV,
                             pdFALSE, pdTRUE, portMAX_DELAY);
+    }
+    apply_step(step_idx);
+    printf("[Stepper] IWR streaming. Motor LOCKED.\n");
+
+    // Wait for compass calibration if it hasn't finished yet.
+    if (!dwm_geom_is_calibrated()) {
+        printf("[Stepper] Waiting for compass calibration...\n");
+        while (!dwm_geom_is_calibrated()) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
     }
     
 #ifdef CSV_OUTPUT
@@ -130,7 +131,7 @@ void stepperTask()
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 #else
-    printf("[Stepper] IWR6843 is actively tracking! Starting sweep pattern.\n");
+    printf("[Stepper] IWR streaming + compass calibrated. Starting sweep pattern.\n");
 
     while (1) {
         for (int i = 0; i < 8; i++) {

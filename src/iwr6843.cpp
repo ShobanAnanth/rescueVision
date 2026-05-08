@@ -14,6 +14,7 @@
 #include <math.h>
 #include "ble_link.h"
 #include "dwm_geom.h"
+#include "compass.h"
 
 #if HEURISTIC_GATES == 2
 #include "rescue_vision_model.h"
@@ -507,10 +508,11 @@ static void parse_tlvs(uint32_t frame_num, const uint8_t *payload, uint32_t payl
         }
         printf("========================================================================\n");
         if (ble_out) {
-            if (ble_link_is_subscribed()) {
+            // Suppress until the compass has fully calibrated and dwm_geom has
+            // captured a trustworthy world-heading reference. Otherwise BLE
+            // would broadcast headings anchored to a half-converged offset.
+            if (ble_link_is_subscribed() && dwm_geom_is_calibrated()) {
                 float hdg = dwm_get_assembly_world_heading_deg();
-                if (hdg < 0.0f)    hdg += 360.0f;
-                if (hdg >= 360.0f) hdg -= 360.0f;
                 uint16_t hdg_cdeg = (uint16_t)(hdg * 100.0f + 0.5f);
                 uint32_t ts_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 

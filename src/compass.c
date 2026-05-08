@@ -69,7 +69,53 @@ static void IRAM_ATTR drdy_isr_handler(void *arg) {
 // calibration distinguish "no sample yet" from "actually pointing at 0°".
 static volatile float s_heading_deg = NAN;
 
+// Circular buffer for windowed heading average.
+// Written only by compass_task; read from any task via compass_get_windowed_heading_deg().
+// A circular (vector) mean is used so the 0°/360° wrap doesn't bias the result.
+#define COMPASS_WINDOW_SIZE 10
+static float   s_hdg_buf[COMPASS_WINDOW_SIZE] = {0};
+static int     s_hdg_head  = 0;   // index of next write slot
+static volatile int s_hdg_count = 0;  // samples stored, capped at COMPASS_WINDOW_SIZE
+
+float compass_get_windowed_heading_deg(void) {
+    int n = s_hdg_count;
+    if (n == 0) return NAN;
+    float sin_sum = 0.0f, cos_sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        float r = s_hdg_buf[i] * (float)M_PI / 180.0f;
+        sin_sum += sinf(r);
+        cos_sum += cosf(r);
+    }
+    float mean = atan2f(sin_sum, cos_sum) * 180.0f / (float)M_PI;
+    if (mean < 0.0f) mean += 360.0f;
+    return mean;
+}
+
+// Hard-iron offset tracking (running min/max). Promoted to file scope so the
+// offset is available for logging outside the task. Never used as the
+// calibration-complete criterion — see s_sectors_visited below.
+static volatile int16_t s_x_min = 32767, s_x_max = -32768;
+static volatile int16_t s_y_min = 32767, s_y_max = -32768;
+
+// 8 × 45° sector calibration. A sector is confirmed only after
+// CAL_CONSEC_REQUIRED back-to-back readings fall in it AND each consecutive
+// pair differs by ≤ CAL_CONSEC_MAX_DELTA degrees. This dual requirement
+// prevents both boot-noise false-trips (single-sample sector visits) and
+// rapid-pass false-trips (transient motion that sweeps through a sector too
+// fast to be stable). A stationary noisy device can only confirm the one
+// sector it's sitting in; all 8 require a genuine slow rotation.
+// At 200 Hz ODR, 5 consecutive ≈ 25 ms minimum dwell per sector.
+#define CAL_CONSEC_REQUIRED  5
+#define CAL_CONSEC_MAX_DELTA 2.0f
+static uint8_t s_sector_consec[8]   = {0};
+static float   s_sector_last_hdg[8] = {-1.0f, -1.0f, -1.0f, -1.0f,
+                                        -1.0f, -1.0f, -1.0f, -1.0f};
+static volatile uint8_t s_sectors_visited = 0;
+static volatile bool    s_calibrated = false;
+
 float compass_get_heading_deg(void) { return s_heading_deg; }
+
+bool compass_is_calibrated(void) { return s_calibrated; }
 
 static esp_err_t reg_write(uint8_t reg, uint8_t val) {
   uint8_t buf[2] = {reg, val};
@@ -195,20 +241,17 @@ static void compass_task(void *arg) {
     float mag = sqrtf(x_uT * x_uT + y_uT * y_uT + z_uT * z_uT);
 
     // --- Hard-Iron Calibration (Running Min/Max) ---
-    // If your heading only wiggles a few degrees (e.g. 200-230), it means the Earth's 
-    // magnetic vector is riding on top of a massive static offset (from a nearby 
+    // If your heading only wiggles a few degrees (e.g. 200-230), it means the Earth's
+    // magnetic vector is riding on top of a massive static offset (from a nearby
     // magnet, like your stepper motor). This traces a circle that does not enclose 0,0.
-    static int16_t x_min = 32767, x_max = -32768;
-    static int16_t y_min = 32767, y_max = -32768;
-
-    if (x < x_min) x_min = x;
-    if (x > x_max) x_max = x;
-    if (y < y_min) y_min = y;
-    if (y > y_max) y_max = y;
+    if (x < s_x_min) s_x_min = x;
+    if (x > s_x_max) s_x_max = x;
+    if (y < s_y_min) s_y_min = y;
+    if (y > s_y_max) s_y_max = y;
 
     // Calculate the center of the circle (the static magnetic offset)
-    float x_offset = (x_max + x_min) / 2.0f;
-    float y_offset = (y_max + y_min) / 2.0f;
+    float x_offset = (s_x_max + s_x_min) / 2.0f;
+    float y_offset = (s_y_max + s_y_min) / 2.0f;
 
     // Subtract the offset to center the circle at 0,0
     float x_cal = (float)x - x_offset;
@@ -220,12 +263,50 @@ static void compass_task(void *arg) {
       heading += 360.0f;
     s_heading_deg = heading;
 
+    // Push into the windowed-average circular buffer.
+    s_hdg_buf[s_hdg_head] = heading;
+    s_hdg_head = (s_hdg_head + 1) % COMPASS_WINDOW_SIZE;
+    if (s_hdg_count < COMPASS_WINDOW_SIZE) s_hdg_count++;
+
+    // Confirm a sector only after CAL_CONSEC_REQUIRED consecutive readings
+    // in it with no single step exceeding CAL_CONSEC_MAX_DELTA degrees.
+    if (!s_calibrated) {
+      int sector = (int)(heading / 45.0f) & 0x07;
+      uint8_t bit = (uint8_t)(1u << sector);
+      if (!(s_sectors_visited & bit)) {
+        float last = s_sector_last_hdg[sector];
+        if (last < 0.0f) {
+          s_sector_consec[sector] = 1;
+        } else {
+          float delta = fabsf(heading - last);
+          if (delta > 180.0f) delta = 360.0f - delta; // wrap-around safe
+          s_sector_consec[sector] =
+              (delta <= CAL_CONSEC_MAX_DELTA) ? s_sector_consec[sector] + 1 : 1;
+        }
+        s_sector_last_hdg[sector] = heading;
+        if (s_sector_consec[sector] >= CAL_CONSEC_REQUIRED) {
+          s_sectors_visited |= bit;
+          if (s_sectors_visited == 0xFFu) {
+            s_calibrated = true;
+            ESP_LOGI(TAG,
+                     "calibration complete: all 8 sectors confirmed, "
+                     "offset=(%.0f, %.0f) LSB",
+                     x_offset, y_offset);
+          }
+        }
+      }
+    }
+
     // Print raw vs calibrated data so the user can literally see the offset!
     if (good % 20 == 0) {
-      ESP_LOGI(TAG, "Raw: X=%6d Y=%6d | Off: X=%6.0f Y=%6.0f | Hdg: %.1f", 
-               x, y, x_offset, y_offset, heading);
+      int sectors_done = __builtin_popcount(s_sectors_visited);
+      ESP_LOGI(TAG,
+               "Raw: X=%6d Y=%6d | Off: X=%6.0f Y=%6.0f | Hdg: %5.1f | "
+               "sectors: %d/8 %s",
+               x, y, x_offset, y_offset, heading, sectors_done,
+               s_calibrated ? "[CAL]" : "[ROTATE]");
     }
-    
+
     good++;
 
     // if ((xTaskGetTickCount() - last_report) > pdMS_TO_TICKS(5000)) {

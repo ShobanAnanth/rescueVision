@@ -27,8 +27,8 @@ extern "C" {
 
 // IWR \u2192 DWM static rigid transform, from SolidWorks measurement.
 #define DWM_GEOM_OFFSET_X_MM   43.18f
-#define DWM_GEOM_OFFSET_Y_MM   54.82f
-#define DWM_GEOM_OFFSET_Z_MM   83.47f
+#define DWM_GEOM_OFFSET_Y_MM   13.97f
+#define DWM_GEOM_OFFSET_Z_MM   (-92.43f)
 #define DWM_GEOM_TILT_X_DEG    10.0f
 
 typedef struct {
@@ -45,14 +45,16 @@ typedef struct {
 // point \u2014 call dwm_geom_calibrate_zero() again later once it has settled.
 void dwm_geom_init(void);
 
-// Re-capture compass heading + stepper angle as the new world-frame zero.
+// Open the calibration gate so downstream consumers (stepper, BLE) start.
+// Assembly heading is always the live windowed compass average, so there is
+// no longer a snapshot to capture — this call just sets the ready flag.
 void dwm_geom_calibrate_zero(void);
 
 // Check if compass has securely anchored to the world frame.
 bool dwm_geom_is_calibrated(void);
 
-// Current heading of the IWR/DWM assembly in world frame (degrees, CCW-positive).
-//   = world_heading_at_boot + (stepper_angle_now - stepper_ref)
+// Current heading of the IWR/DWM assembly (degrees, CCW-positive).
+// Returns the circular mean of the last 10 compass samples.
 float dwm_get_assembly_world_heading_deg(void);
 
 // Transform an IWR-frame point (Cartesian, meters) to DWM + world frames.
