@@ -8,7 +8,8 @@ struct NearbyDemoApp: App {
     @StateObject private var ni  = NIManager()
     @StateObject private var ar  = ARManager()
     @StateObject private var estimator = AnchorEstimator()
-    @StateObject private var rvBLE = RescueVisionBLEManager()
+    @StateObject private var rvBLE   = RescueVisionBLEManager()
+    @StateObject private var compass = CompassManager()
 
     var body: some Scene {
         WindowGroup {
@@ -18,6 +19,7 @@ struct NearbyDemoApp: App {
                 .environmentObject(ar)
                 .environmentObject(estimator)
                 .environmentObject(rvBLE)
+                .environmentObject(compass)
                 .onAppear {
                     wireManagers()
                     ar.start()

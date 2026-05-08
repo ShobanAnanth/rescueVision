@@ -6,11 +6,12 @@ struct ContentView: View {
     @EnvironmentObject var ni: NIManager
     @EnvironmentObject var ar: ARManager
     @EnvironmentObject var estimator: AnchorEstimator
-    @EnvironmentObject var rvBLE: RescueVisionBLEManager
+    @EnvironmentObject var rvBLE:   RescueVisionBLEManager
+    @EnvironmentObject var compass: CompassManager
 
     var body: some View {
         ZStack {
-            ARViewContainer(arManager: ar, estimator: estimator)
+            ARViewContainer(arManager: ar, estimator: estimator, compass: compass, rvBLE: rvBLE)
                 .ignoresSafeArea()
 
             if let angle = estimator.offScreenAngle {
@@ -31,7 +32,7 @@ struct ContentView: View {
             }
 
             VStack {
-                HUDView(ble: ble, ni: ni, estimator: estimator, rvBLE: rvBLE)
+                HUDView(ble: ble, ni: ni, estimator: estimator, rvBLE: rvBLE, compass: compass)
                     .padding()
                 Spacer()
                 Button("Reset Estimate") {
@@ -52,7 +53,8 @@ private struct HUDView: View {
     @ObservedObject var ble: BLEManager
     @ObservedObject var ni: NIManager
     @ObservedObject var estimator: AnchorEstimator
-    @ObservedObject var rvBLE: RescueVisionBLEManager
+    @ObservedObject var rvBLE:   RescueVisionBLEManager
+    @ObservedObject var compass: CompassManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -62,6 +64,7 @@ private struct HUDView: View {
             HUDRow(label: "Measurements", value: "\(estimator.measurementCount)")
             HUDRow(label: "Residual", value: String(format: "%.3f m", estimator.residualError))
             HUDRow(label: "Heading", value: headingText)
+            HUDRow(label: "Compass", value: compassText)
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
@@ -100,6 +103,16 @@ private struct HUDView: View {
         }
         return rvBLE.isConnected ? "—" : "No device"
     }
+
+    private var compassText: String {
+        switch compass.calibration {
+        case .unavailable:  return "No magnetometer"
+        case .uncalibrated: return "Calibrating…"
+        case .low:          return compass.magneticHeading.map { String(format: "%.0f° (low)", $0) } ?? "—"
+        case .medium:       return compass.magneticHeading.map { String(format: "%.0f° (med)", $0) } ?? "—"
+        case .high:         return compass.magneticHeading.map { String(format: "%.0f°", $0) } ?? "—"
+        }
+    }
 }
 
 private struct HUDRow: View {
@@ -126,4 +139,5 @@ private struct HUDRow: View {
         .environmentObject(ARManager())
         .environmentObject(AnchorEstimator())
         .environmentObject(RescueVisionBLEManager())
+        .environmentObject(CompassManager())
 }

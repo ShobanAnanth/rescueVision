@@ -53,3 +53,36 @@ Heading extraction: read `UInt16` at byte offset 8, divide by 100.0 → degrees.
 
 ### Result
 On UWB module disconnect: NI session tears down, AR anchor disappears, HUD resets, BLE immediately begins scanning. Indistinguishable from app launch.
+
+---
+
+## Compass heading arrow on UWB dot
+
+### Goal
+Draw a yellow AR arrow protruding from the UWB sphere showing the compass bearing received from the ESP32 (`dwm_heading_cdeg`), resolved into ARKit world space using the iPhone's own magnetometer.
+
+### Key math
+ARKit uses `worldAlignment = .gravity` — world Y is up, X/Z are arbitrary. To find North in world space each frame:
+
+1. **Portrait-top direction**: ARKit's camera transform is always in the sensor's landscape-right native frame. Camera +X = sensor right = device physical right (in landscape) = device physical **top** in portrait-upside-down... No. Camera -X = device physical top in portrait. Specifically: `portraitTopHorizontal = normalize(-camX.x, 0, -camX.z)` where `camX = camera.transform.columns.0`.
+
+2. **Find North**: `CLHeading.magneticHeading` = H° CW from magnetic North that the portrait-top is currently pointing. Therefore: `northInWorld = simd_quatf(angle: +H_rad, axis: (0,1,0)).act(portraitTopHorizontal)` (rotate CCW by H to undo the CW offset from North).
+
+3. **ESP arrow direction**: `arrowDir = simd_quatf(angle: -espH_rad, axis: (0,1,0)).act(northInWorld)` (rotate North CW by ESP heading).
+
+4. **Orient entities**: shaft (cylinder) and cone have natural +Y axis. Since arrowDir is always horizontal, the rotation is always exactly 90° around `normalize(cross((0,1,0), arrowDir))`.
+
+### Arrow visibility conditions
+- UWB sphere must be visible (smoothedPosition ≠ nil)
+- ESP32 connected and `rvBLE.heading` ≠ nil
+- Compass calibration is `.low`, `.medium`, or `.high` (headingAccuracy ≥ 0)
+- Device not aimed straight up/down (portraitTopHorizontal magnitude > 1e-4)
+
+### Files changed / created
+
+| File | Status | Notes |
+|------|--------|-------|
+| `NearbyDemo/NearbyDemo/Managers/CompassManager.swift` | **Created** | `CLLocationManager` wrapper. Publishes `magneticHeading: Double?` and `calibration: CompassCalibration`. Auto-shows system calibration UI when uncalibrated. No location auth needed for heading. |
+| `NearbyDemo/NearbyDemo/ARViewContainer.swift` | **Modified** | Added `compass` and `rvBLE` constructor params (stored in Coordinator, refreshed via `updateUIView`). Added yellow shaft (cylinder, 0.30 m) + cone (0.08 m) entities. Per-frame heading arrow logic in `SceneEvents.Update`. |
+| `NearbyDemo/NearbyDemo/NearbyDemoApp.swift` | **Modified** | Added `@StateObject private var compass = CompassManager()` and injected as environment object. |
+| `NearbyDemo/NearbyDemo/ContentView.swift` | **Modified** | Added `compass` env object, passed to `ARViewContainer` and `HUDView`. Added "Compass" HUD row showing calibration quality and current bearing. |
