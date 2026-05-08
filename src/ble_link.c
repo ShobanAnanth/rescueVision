@@ -117,7 +117,18 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         if (event->connect.status == 0) {
             s_conn_handle = event->connect.conn_handle;
             ESP_LOGI(TAG, "peer connected (handle=%u)", s_conn_handle);
-            // Central initiates MTU exchange; we accept up to PREFERRED_MTU (247).
+            // Central initiates MTU exchange; we accept up to PREFERRED_MTU.
+
+            // Request faster connection interval for iOS (15ms to 30ms)
+            struct ble_gap_upd_params params = {
+                .itvl_min = 12,  // 12 * 1.25ms = 15ms
+                .itvl_max = 24,  // 24 * 1.25ms = 30ms
+                .latency  = 0,
+                .supervision_timeout = 200, // 200 * 10ms = 2s
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+            ble_gap_update_params(s_conn_handle, &params);
         } else {
             ESP_LOGW(TAG, "connect failed; status=%d", event->connect.status);
             start_advertising();
