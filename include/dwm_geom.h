@@ -26,10 +26,10 @@ extern "C" {
 // heading and stepper.c's `angle` (CCW = +1).
 
 // IWR \u2192 DWM static rigid transform, from SolidWorks measurement.
-#define DWM_GEOM_OFFSET_X_MM   43.18f
+#define DWM_GEOM_OFFSET_X_MM   (-43.18f)
 #define DWM_GEOM_OFFSET_Y_MM   13.97f
-#define DWM_GEOM_OFFSET_Z_MM   (-92.43f)
-#define DWM_GEOM_TILT_X_DEG    10.0f
+#define DWM_GEOM_OFFSET_Z_MM   92.43f
+#define DWM_GEOM_TILT_X_DEG    (-10.0f)
 
 typedef struct {
     float dwm_x_mm,   dwm_y_mm,   dwm_z_mm;     // in DWM body frame

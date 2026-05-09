@@ -139,6 +139,7 @@ void stepperTask()
             while (iwr6843_has_active_targets()) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
+            while (1) vTaskDelay(portMAX_DELAY);
 
             printf("%s 90° (angle=%.1f)\n", turns[i] == CW ? "CW" : "CCW", angle);
             

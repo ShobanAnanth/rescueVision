@@ -43,16 +43,16 @@ void dwm_transform_iwr_xyz(float x_iwr_m, float y_iwr_m, float z_iwr_m,
     float rz = s_sin_tilt * y_iwr_mm + s_cos_tilt * z_iwr_mm;
 
     // 2. Translate by the vector FROM the DWM TO the sensor (adding the offset).
-    out->dwm_x_mm = rx + DWM_GEOM_OFFSET_X_MM;
+    out->dwm_x_mm = -rx + DWM_GEOM_OFFSET_X_MM;
     out->dwm_y_mm = ry + DWM_GEOM_OFFSET_Y_MM;
-    out->dwm_z_mm = -rz + DWM_GEOM_OFFSET_Z_MM;
+    out->dwm_z_mm = rz + DWM_GEOM_OFFSET_Z_MM;
 
     // 3. Rotate DWM body → world. Heading H is CW from world +Y (north),
     //    world axes are +X = east, +Y = north, +Z = up. The matrix that takes
     //    a body vector into world is:
     //        [  cos H   sin H ]
     //        [ -sin H   cos H ]
-    float h_rad = deg2rad(wrap_360(compass_get_windowed_heading_deg() + angle));
+    float h_rad = deg2rad(wrap_360(compass_get_windowed_heading_deg() - angle));
     float ch = cosf(h_rad), sh = sinf(h_rad);
     out->world_x_mm =  ch * out->dwm_x_mm + sh * out->dwm_y_mm;
     out->world_y_mm = -sh * out->dwm_x_mm + ch * out->dwm_y_mm;
