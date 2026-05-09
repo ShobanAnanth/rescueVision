@@ -36,6 +36,84 @@ Heading extraction: read `UInt16` at byte offset 8, divide by 100.0 → degrees.
 
 ---
 
+## Radar point cloud AR visualization
+
+### What the firmware sends (per-point, 8 bytes each, little-endian)
+Source: `~/new/rescueVision/include/ble_link.h` / `src/iwr6843.cpp`
+
+```
+[0..1]  uint16  distance_mm       straight-line distance from DWM module
+[2..3]  uint16  bearing_cdeg      world bearing × 100, CW from North   ← ABSOLUTE world frame
+[4..5]  int16   elevation_cdeg    world elevation × 100, degrees from horizontal
+[6..7]  uint16  class_id          1 = ACTIVE, 2 = UNCONSCIOUS
+```
+
+`bearing_cdeg` is a true world compass bearing — `dwm_transform_iwr_xyz` in the firmware
+converts the radar's sensor-frame XYZ into world-frame polar before publishing.  The
+header's `point_count` field reports how many points are in **this** BLE notification, not
+the full frame.  Multiple notifications sharing the same `frame_num` are stitched together.
+
+### Fragment reassembly
+Each BLE notification carries the 12-byte header (with `frame_num`) plus 0–N points.
+When `frame_num` changes the accumulator is cleared and a new frame starts.
+After each notification the current accumulated slice is published immediately so the
+AR display always reflects the freshest partial frame.
+
+### AR placement math
+```
+northInWorld  — same vector resolved for the heading arrow (camera -X axis, magneticHeading pivot)
+horizDir      = rotate(northInWorld, CW by bearing)
+worldPos      = anchorPos
+              + horizDir × (dist × cos(elev))   ← horizontal offset
+              + (0, dist × sin(elev), 0)         ← vertical offset (ARKit Y = up)
+```
+Both `northInWorld` resolution and CW rotation use the same `simd_quatf(angle: -bearRad, axis: Y)` pattern
+as the existing heading arrow.
+
+### Files changed
+
+| File | Status | Notes |
+|------|--------|-------|
+| `NearbyDemo/NearbyDemo/Managers/RescueVisionBLEManager.swift` | **Modified** | Added `RadarPoint` struct. Added `@Published var latestPoints: [RadarPoint]`. Added `currentFrameNum` / `accumulatedPoints` for fragment stitching. `didUpdateValueFor` now parses all point records in each notification and publishes after every notification. |
+| `NearbyDemo/NearbyDemo/ARViewContainer.swift` | **Modified** | Added three fixed-size entity pools (10 each): green = ACTIVE, orange = UNCONSCIOUS, gray = ghost/other. Pool entities are pre-created in `makeUIView` and added to `anchorEntity`. Restructured `SceneEvents.Update`: `northInWorldOpt` is now computed once and shared by both the heading arrow and the radar point cloud. Pools are disabled when `anchorPos` is nil or compass is not ready. |
+
+### Design decisions
+- Three separate pre-colored pools (green/orange/gray) avoid per-frame material updates.
+- `northInWorldOpt` is computed once per frame and nil-propagates to both the arrow
+  and the point cloud, so neither feature degrades the other.
+- Pool size is 10 per class = 30 entities total; radar typically tracks ≤ 5 targets.
+- Points are disabled (not removed) when not in use to avoid entity lifecycle overhead.
+- No changes to `ContentView.swift`, `NearbyDemoApp.swift`, or any other manager.
+
+---
+
+## "Align Compass" button
+
+### Problem
+The ESP32's DWM heading and the iPhone's magnetometer can have a static offset due to
+magnetic distortion near the hardware or assembly calibration differences. All rendered
+bearings (heading arrow, radar point positions) share this error.
+
+### Solution
+A one-shot calibration capture: `compassOffset = iPhoneHeading − espHeading` at the
+moment the user taps "Align Compass". Every subsequent bearing computation adds this
+offset before converting to radians, so the two coordinate systems are reconciled.
+
+**Formula:**  `effectiveBearing = rawBearing + compassOffset`
+Applied to: `espHeadingDeg` (yellow arrow) and `pt.bearingDeg` (each radar point).
+The `northInWorld` vector is unchanged — it is derived solely from the iPhone compass
+and is therefore already correct.
+
+### Files changed
+
+| File | Status | Notes |
+|------|--------|-------|
+| `RescueVisionBLEManager.swift` | **Modified** | Added `var compassOffset: Double = 0.0`. Not `@Published` — read per-frame by the AR closure, no SwiftUI reactivity needed. |
+| `ARViewContainer.swift` | **Modified** | `let offset = coordinator.rvBLE?.compassOffset ?? 0.0` resolved once per section. Added to `espHeadingDeg` for the arrow and to `pt.bearingDeg` for each radar point. |
+| `ContentView.swift` | **Modified** | "Align Compass" button alongside "Reset Estimate" in an `HStack`. Disabled when either `compass.magneticHeading` or `rvBLE.heading` is nil. Sets `rvBLE.compassOffset = phone − esp` on tap. |
+
+---
+
 ## UWB BLE auto-reconnect on disconnect
 
 ### Problem

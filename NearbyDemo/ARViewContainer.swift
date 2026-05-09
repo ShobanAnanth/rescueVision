@@ -44,14 +44,55 @@ struct ARViewContainer: UIViewRepresentable {
         anchorEntity.addChild(sphereEntity)
         anchorEntity.addChild(shaftEntity)
         anchorEntity.addChild(coneEntity)
+
+        // ── Radar point cloud entity pools ────────────────────────────────────
+        // Three fixed-size pools pre-colored by class_id:
+        //   green  → classId 1 (ACTIVE)
+        //   orange → classId 2 (UNCONSCIOUS)
+        //   gray   → classId 0 / other (ghost / unclassified)
+        let radarRadius: Float = 0.04
+        let maxPerClass = 10
+        var activeMat      = UnlitMaterial(); activeMat.color      = .init(tint: .green)
+        var unconsciousMat = UnlitMaterial(); unconsciousMat.color = .init(tint: .orange)
+        var ghostMat       = UnlitMaterial(); ghostMat.color       = .init(tint: .gray)
+
+        var activePool      = [ModelEntity]()
+        var unconsciousPool = [ModelEntity]()
+        var ghostPool       = [ModelEntity]()
+
+        for _ in 0..<maxPerClass {
+            let e = ModelEntity(mesh: MeshResource.generateSphere(radius: radarRadius),
+                                materials: [activeMat])
+            e.isEnabled = false
+            anchorEntity.addChild(e)
+            activePool.append(e)
+        }
+        for _ in 0..<maxPerClass {
+            let e = ModelEntity(mesh: MeshResource.generateSphere(radius: radarRadius),
+                                materials: [unconsciousMat])
+            e.isEnabled = false
+            anchorEntity.addChild(e)
+            unconsciousPool.append(e)
+        }
+        for _ in 0..<maxPerClass {
+            let e = ModelEntity(mesh: MeshResource.generateSphere(radius: radarRadius),
+                                materials: [ghostMat])
+            e.isEnabled = false
+            anchorEntity.addChild(e)
+            ghostPool.append(e)
+        }
+
         arView.scene.addAnchor(anchorEntity)
 
         let coordinator = context.coordinator
-        coordinator.sphereEntity = sphereEntity
-        coordinator.shaftEntity  = shaftEntity
-        coordinator.coneEntity   = coneEntity
-        coordinator.compass      = compass
-        coordinator.rvBLE        = rvBLE
+        coordinator.sphereEntity              = sphereEntity
+        coordinator.shaftEntity               = shaftEntity
+        coordinator.coneEntity                = coneEntity
+        coordinator.compass                   = compass
+        coordinator.rvBLE                     = rvBLE
+        coordinator.radarActiveEntities       = activePool
+        coordinator.radarUnconsciousEntities  = unconsciousPool
+        coordinator.radarGhostEntities        = ghostPool
 
         // SceneEvents.Update fires every rendered frame on the main thread.
         coordinator.updateSub = arView.scene.subscribe(to: SceneEvents.Update.self) {
@@ -83,6 +124,9 @@ struct ARViewContainer: UIViewRepresentable {
                 }
                 coordinator.shaftEntity?.isEnabled = false
                 coordinator.coneEntity?.isEnabled  = false
+                coordinator.radarActiveEntities.forEach      { $0.isEnabled = false }
+                coordinator.radarUnconsciousEntities.forEach { $0.isEnabled = false }
+                coordinator.radarGhostEntities.forEach       { $0.isEnabled = false }
                 return
             }
 
@@ -128,62 +172,113 @@ struct ARViewContainer: UIViewRepresentable {
                 }
             }
 
+            // ── Resolve North in ARKit world space ────────────────────────────
+            // Shared by the heading arrow and the radar point cloud.
+            // Returns nil if the device is aimed straight up/down or the compass
+            // hasn't reached at least low-quality calibration.
+            //
+            // ARKit camera +X = sensor right (landscape-right native frame).
+            // Physical portrait-top = camera -X projected onto the horizontal plane.
+            // CLHeading.magneticHeading = degrees CW from North that the portrait-top points.
+            // → rotate portrait-top CCW by magneticHeading to arrive at North.
+            var northInWorldOpt: SIMD3<Float>? = nil
+            if let camera = arView.session.currentFrame?.camera,
+               let magneticHeadingDeg = coordinator.compass?.magneticHeading,
+               let cal = coordinator.compass?.calibration,
+               cal == .low || cal == .medium || cal == .high {
+                let camX = simd_float3(camera.transform.columns.0.x,
+                                       camera.transform.columns.0.y,
+                                       camera.transform.columns.0.z)
+                let portraitTopH = simd_float3(-camX.x, 0, -camX.z)
+                if simd_length(portraitTopH) > 1e-4 {
+                    let normalized = simd_normalize(portraitTopH)
+                    let magRad = Float(magneticHeadingDeg * .pi / 180.0)
+                    northInWorldOpt = simd_quatf(angle: magRad, axis: SIMD3<Float>(0, 1, 0)).act(normalized)
+                }
+            }
+
             // ── Compass heading arrow ─────────────────────────────────────────
-            // Requires: live camera pose, ESP32 heading, and at least low-quality
-            // compass calibration (headingAccuracy ≥ 0°).
-            guard
-                let camera = arView.session.currentFrame?.camera,
-                let espHeadingDeg = coordinator.rvBLE?.heading,
-                let magneticHeadingDeg = coordinator.compass?.magneticHeading,
-                let cal = coordinator.compass?.calibration,
-                cal == .low || cal == .medium || cal == .high,
-                let shaft = coordinator.shaftEntity,
-                let cone  = coordinator.coneEntity
-            else {
+            if let northInWorld = northInWorldOpt,
+               let espHeadingDeg = coordinator.rvBLE?.heading,
+               let shaft = coordinator.shaftEntity,
+               let cone  = coordinator.coneEntity {
+                let offset = coordinator.rvBLE?.compassOffset ?? 0.0
+                // Rotate North CW by (espHeading + offset) to get the arrow direction.
+                let espRad   = Float((espHeadingDeg + offset) * .pi / 180.0)
+                let arrowDir = simd_quatf(angle: -espRad, axis: SIMD3<Float>(0, 1, 0)).act(northInWorld)
+
+                // Align entity +Y axis with arrowDir (always horizontal → 90° around cross product).
+                let rotAxis  = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), arrowDir))
+                let arrowRot = simd_quatf(angle: .pi / 2, axis: rotAxis)
+
+                let shaftStart: Float = 0.05   // sphere radius
+                shaft.setPosition(anchorPos + arrowDir * (shaftStart + shaftLength / 2), relativeTo: nil)
+                shaft.orientation = arrowRot
+                shaft.isEnabled   = true
+
+                cone.setPosition(anchorPos + arrowDir * (shaftStart + shaftLength + coneHeight / 2), relativeTo: nil)
+                cone.orientation = arrowRot
+                cone.isEnabled   = true
+            } else {
                 coordinator.shaftEntity?.isEnabled = false
                 coordinator.coneEntity?.isEnabled  = false
-                return
             }
 
-            // ARKit camera +X in world space = the sensor's "right" (landscape-right frame).
-            // The physical portrait-top of the device = camera -X projected horizontally.
-            // CLHeading.magneticHeading is the bearing of the portrait-top: degrees CW from North.
-            let camX = simd_float3(camera.transform.columns.0.x,
-                                   camera.transform.columns.0.y,
-                                   camera.transform.columns.0.z)
-            var portraitTopH = simd_float3(-camX.x, 0, -camX.z)
-            guard simd_length(portraitTopH) > 1e-4 else {
-                // Device is aimed nearly straight up/down; can't resolve horizontal North.
-                shaft.isEnabled = false
-                cone.isEnabled  = false
-                return
+            // ── Radar point cloud ─────────────────────────────────────────────
+            // bearing_cdeg values are absolute world bearings (CW from North), computed
+            // by dwm_transform_iwr_xyz in the firmware. We apply the same North-in-world
+            // vector resolved above to position each point in ARKit world space.
+            //
+            // World position for a point at (dist, bearing, elevation):
+            //   horizDir = northInWorld rotated CW by bearing
+            //   horizDist = dist * cos(elev)
+            //   vertOffset = dist * sin(elev)   (Y is up in ARKit)
+            //   worldPos = anchorPos + horizDir * horizDist + (0, vertOffset, 0)
+            let aPool = coordinator.radarActiveEntities
+            let uPool = coordinator.radarUnconsciousEntities
+            let gPool = coordinator.radarGhostEntities
+            let radarPts = coordinator.rvBLE?.latestPoints ?? []
+
+            if let northInWorld = northInWorldOpt, !radarPts.isEmpty {
+                let offset = coordinator.rvBLE?.compassOffset ?? 0.0
+                var ai = 0, ui = 0, gi = 0
+                for pt in radarPts {
+                    let bearRad   = Float((pt.bearingDeg + offset) * .pi / 180.0)
+                    let elevRad   = Float(pt.elevationDeg * .pi / 180.0)
+                    let horizDist = pt.distanceM * cos(elevRad)
+                    let vertOff   = pt.distanceM * sin(elevRad)
+                    let horizDir  = simd_quatf(angle: -bearRad, axis: SIMD3<Float>(0, 1, 0)).act(northInWorld)
+                    let worldPos  = anchorPos + horizDir * horizDist + SIMD3<Float>(0, vertOff, 0)
+
+                    switch pt.classId {
+                    case 1:
+                        if ai < aPool.count {
+                            aPool[ai].setPosition(worldPos, relativeTo: nil)
+                            aPool[ai].isEnabled = true
+                            ai += 1
+                        }
+                    case 2:
+                        if ui < uPool.count {
+                            uPool[ui].setPosition(worldPos, relativeTo: nil)
+                            uPool[ui].isEnabled = true
+                            ui += 1
+                        }
+                    default:
+                        if gi < gPool.count {
+                            gPool[gi].setPosition(worldPos, relativeTo: nil)
+                            gPool[gi].isEnabled = true
+                            gi += 1
+                        }
+                    }
+                }
+                for i in ai..<aPool.count { aPool[i].isEnabled = false }
+                for i in ui..<uPool.count { uPool[i].isEnabled = false }
+                for i in gi..<gPool.count { gPool[i].isEnabled = false }
+            } else {
+                aPool.forEach { $0.isEnabled = false }
+                uPool.forEach { $0.isEnabled = false }
+                gPool.forEach { $0.isEnabled = false }
             }
-            portraitTopH = simd_normalize(portraitTopH)
-
-            // Rotate portrait-top CCW by magneticHeading to arrive at North.
-            // (The top is magneticHeading° CW from North, so undoing that = CCW rotation.)
-            let magRad = Float(magneticHeadingDeg * .pi / 180.0)
-            let northInWorld = simd_quatf(angle: magRad, axis: SIMD3<Float>(0, 1, 0)).act(portraitTopH)
-
-            // Rotate North CW by espHeading to get the arrow's world-space direction.
-            let espRad = Float(espHeadingDeg * .pi / 180.0)
-            let arrowDir = simd_quatf(angle: -espRad, axis: SIMD3<Float>(0, 1, 0)).act(northInWorld)
-
-            // Build rotation: align each entity's natural +Y axis with arrowDir.
-            // arrowDir is always horizontal so the cross product with (0,1,0) is safe.
-            let rotAxis = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), arrowDir))
-            let arrowRot = simd_quatf(angle: .pi / 2, axis: rotAxis)
-
-            // Position shaft starting at sphere surface (sphereRadius = 0.05 m).
-            let shaftStart: Float = 0.05   // sphere radius
-            shaft.setPosition(anchorPos + arrowDir * (shaftStart + shaftLength / 2), relativeTo: nil)
-            shaft.orientation = arrowRot
-            shaft.isEnabled = true
-
-            // Position cone immediately after shaft tip.
-            cone.setPosition(anchorPos + arrowDir * (shaftStart + shaftLength + coneHeight / 2), relativeTo: nil)
-            cone.orientation = arrowRot
-            cone.isEnabled = true
         }
 
         return arView
@@ -206,5 +301,8 @@ struct ARViewContainer: UIViewRepresentable {
         var lastAngle: Double?
         var compass: CompassManager?
         var rvBLE:    RescueVisionBLEManager?
+        var radarActiveEntities:      [ModelEntity] = []
+        var radarUnconsciousEntities: [ModelEntity] = []
+        var radarGhostEntities:       [ModelEntity] = []
     }
 }

@@ -35,12 +35,23 @@ struct ContentView: View {
                 HUDView(ble: ble, ni: ni, estimator: estimator, rvBLE: rvBLE, compass: compass)
                     .padding()
                 Spacer()
-                Button("Reset Estimate") {
-                    estimator.reset()
-                    ni.restartSession()
+                HStack(spacing: 16) {
+                    Button("Align Compass") {
+                        if let phone = compass.magneticHeading, let esp = rvBLE.heading {
+                            rvBLE.compassOffset = phone - esp
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue.opacity(0.8))
+                    .disabled(compass.magneticHeading == nil || rvBLE.heading == nil)
+
+                    Button("Reset Estimate") {
+                        estimator.reset()
+                        ni.restartSession()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red.opacity(0.8))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red.opacity(0.8))
                 .padding(.bottom, 40)
             }
         }
